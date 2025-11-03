@@ -1,0 +1,54 @@
+.connection-status {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 8px 16px;
+  background-color: #2d2d2d;
+  border-bottom: 1px solid #444;
+  font-size: 12px;
+  color: #d4d4d4;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.status-dot.green {
+  background-color: #4caf50;
+}
+
+.status-dot.yellow {
+  background-color: #ffc107;
+}
+
+.status-dot.gray {
+  background-color: #9e9e9e;
+  animation: none;
+}
+
+.status-dot.red {
+  background-color: #f44336;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.session-id {
+  color: #888;
+  font-family: 'Courier New', monospace;
+}

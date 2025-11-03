@@ -1,0 +1,2 @@
+#!/usr/bin/env sh
+cd /opt/dev/claude-studio && pnpm lint-staged

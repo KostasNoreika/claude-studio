@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+server/dist/
+client/dist/
+shared/dist/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Testing
+coverage/
+.nyc_output/
+
+# E2E Testing (Playwright)
+tests/e2e/test-results/
+tests/e2e/playwright-report/
+playwright/.cache/
+playwright-report/
+test-results/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Manual test scripts (use proper test suite instead)
+test-*.js
+test-*.mjs
+test-results.json
+
+# Historical documentation (archived)
+P0*-T0*.md
+P0*-T0*.txt
+PHASE_*.md

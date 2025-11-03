@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  claude-studio:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    container_name: claude-studio-prod
+    restart: unless-stopped
+
+    # Port exposure
+    ports:
+      - "127.0.0.1:3333:3333"  # IPv4 only
+
+    # Environment variables
+    environment:
+      - NODE_ENV=production
+      - PORT=3333
+      - LOG_LEVEL=info
+      - DOCKER_HOST=unix:///var/run/docker.sock
+
+    # Docker socket access (required for container management)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /opt/dev:/opt/dev:ro
+      - /opt/prod:/opt/prod:ro
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:3333/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+    # Network
+    networks:
+      - claude-studio-network
+
+    # Security
+    security_opt:
+      - no-new-privileges:true
+
+    # User (non-root)
+    user: "1000:1000"
+
+networks:
+  claude-studio-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

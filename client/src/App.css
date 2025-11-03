@@ -1,0 +1,14 @@
+.app {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background-color: #1e1e1e;
+  color: #d4d4d4;
+  overflow: hidden;
+}
+
+/* Terminal fills remaining space after ConnectionStatus */
+.app > :last-child {
+  flex: 1;
+}

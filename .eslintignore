@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build/
+server/dist/
+client/dist/
+shared/dist/
+coverage/
+playwright-report/
+test-results/
+.husky/
+*.min.js
