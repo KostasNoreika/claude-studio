@@ -9,7 +9,7 @@
 .preview-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 12px;
   padding: 8px 12px;
   background-color: #2d2d30;
   border-bottom: 1px solid #1e1e1e;
@@ -19,6 +19,11 @@
   font-size: 13px;
   font-weight: 600;
   color: #cccccc;
+}
+
+.preview-mcp-status {
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 .preview-refresh-btn {
@@ -46,6 +51,7 @@
   flex: 1;
   position: relative;
   overflow: hidden;
+  min-height: 0; /* Allow flex child to shrink below content size */
 }
 
 .preview-placeholder {
@@ -138,6 +144,9 @@
 }
 
 .preview-iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
   width: 100%;
   height: 100%;
   border: none;

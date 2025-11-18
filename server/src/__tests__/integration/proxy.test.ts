@@ -9,8 +9,10 @@
  */
 
 import request from 'supertest';
-import app from '../../app';
+import { createApp } from '../../app';
 import { portConfigManager } from '../../proxy/PortConfigManager';
+
+const app = createApp();
 
 describe('Proxy API', () => {
   beforeEach(() => {

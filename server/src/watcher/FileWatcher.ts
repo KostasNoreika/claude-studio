@@ -11,7 +11,7 @@
 
 import chokidar, { FSWatcher } from 'chokidar';
 import { EventEmitter } from 'events';
-import { join } from 'path';
+import { logger } from '../utils/logger';
 
 /**
  * File change event types
@@ -114,18 +114,24 @@ export class FileWatcher extends EventEmitter {
    */
   public start(): void {
     if (this.watcher) {
-      console.warn('[FileWatcher] Already watching:', this.watchPath);
+      logger.warn('FileWatcher already watching directory', { watchPath: this.watchPath });
       return;
     }
 
-    console.log('[FileWatcher] Starting watch:', this.watchPath);
-    console.log('[FileWatcher] Ignore patterns:', this.ignorePatterns);
-    console.log('[FileWatcher] Watch extensions:', this.watchExtensions);
+    logger.info('FileWatcher starting', {
+      watchPath: this.watchPath,
+      ignorePatterns: this.ignorePatterns,
+      watchExtensions: this.watchExtensions
+    });
 
     this.watcher = chokidar.watch(this.watchPath, {
       ignored: this.ignorePatterns,
       persistent: true,
       ignoreInitial: true, // Don't emit events for initial scan
+      depth: 3, // Further limit recursion depth to prevent EMFILE (was 5)
+      usePolling: true, // Use polling to avoid EMFILE with large projects
+      interval: 2000, // Poll every 2 seconds (gentle on system)
+      binaryInterval: 3000, // Poll binaries every 3 seconds
       awaitWriteFinish: {
         stabilityThreshold: 100,
         pollInterval: 50,
@@ -138,11 +144,11 @@ export class FileWatcher extends EventEmitter {
     this.watcher.on('unlink', (path) => this.handleFileChange('unlink', path));
 
     this.watcher.on('error', (error) => {
-      console.error('[FileWatcher] Watcher error:', error);
+      logger.error('FileWatcher error', { error, watchPath: this.watchPath });
     });
 
     this.watcher.on('ready', () => {
-      console.log('[FileWatcher] Ready and watching:', this.watchPath);
+      logger.info('FileWatcher ready', { watchPath: this.watchPath });
     });
   }
 
@@ -154,7 +160,7 @@ export class FileWatcher extends EventEmitter {
       return;
     }
 
-    console.log('[FileWatcher] Stopping watch:', this.watchPath);
+    logger.info('FileWatcher stopping', { watchPath: this.watchPath });
 
     // Clear debounce timer
     if (this.debounceTimer) {
@@ -183,14 +189,14 @@ export class FileWatcher extends EventEmitter {
    * Handle file change event
    */
   private handleFileChange(event: FileChangeEvent, filePath: string): void {
-    console.log(`[FileWatcher] ${event}: ${filePath}`);
+    logger.debug('FileWatcher file change detected', { event, filePath });
 
     // Emit raw event
     this.emit(event, filePath);
 
     // Check if this file should trigger reload
     if (!this.shouldTriggerReload(filePath)) {
-      console.log(`[FileWatcher] Skipping reload for: ${filePath} (not a watched extension)`);
+      logger.debug('Skipping reload for non-watched extension', { filePath });
       return;
     }
 
@@ -213,7 +219,10 @@ export class FileWatcher extends EventEmitter {
     // Schedule new timer
     this.debounceTimer = setTimeout(() => {
       const changedFiles = Array.from(this.pendingChanges);
-      console.log(`[FileWatcher] Emitting reload signal for ${changedFiles.length} file(s)`);
+      logger.info('Emitting reload signal', {
+        fileCount: changedFiles.length,
+        files: changedFiles
+      });
 
       // Emit reload event with all changed files
       this.emit('reload', changedFiles);

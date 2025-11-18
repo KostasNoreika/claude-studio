@@ -11,6 +11,14 @@
  * before being sent to the terminal or stored.
  */
 
+import { logger } from '../utils/logger';
+
+/**
+ * PERFORMANCE FIX (HIGH-001): Security and performance limits
+ */
+const MAX_DEPTH = 5; // Prevent deep object traversal (DoS protection)
+const MAX_KEYS = 50; // Limit object size (DoS protection)
+
 /**
  * HTML entity encoding map
  */
@@ -26,20 +34,42 @@ const HTML_ENTITIES: Record<string, string> = {
 };
 
 /**
+ * PERFORMANCE FIX (HIGH-001): Pre-compiled regex for HTML escaping
+ * Using a single regex instance instead of creating new one each time
+ */
+const HTML_ESCAPE_REGEX = /[&<>"'`=/]/g;
+
+/**
  * Escape HTML entities in a string
+ * PERFORMANCE FIX (HIGH-001): Optimized with early exit and pre-compiled regex
  */
 function escapeHtml(str: string): string {
   if (typeof str !== 'string') {
     return String(str);
   }
-  return str.replace(/[&<>"'`=/]/g, (char) => HTML_ENTITIES[char] || char);
+
+  // Early exit if no special chars (common case optimization)
+  if (!HTML_ESCAPE_REGEX.test(str)) {
+    return str;
+  }
+
+  // Reset regex state for reuse
+  HTML_ESCAPE_REGEX.lastIndex = 0;
+
+  return str.replace(HTML_ESCAPE_REGEX, (char) => HTML_ENTITIES[char] || char);
 }
 
 /**
  * Sanitize a single console argument
+ * PERFORMANCE FIX (HIGH-001): Added depth and size limits for DoS protection
  * Handles various data types safely
  */
-function sanitizeArgument(arg: unknown): unknown {
+function sanitizeArgument(arg: unknown, depth = 0): unknown {
+  // SECURITY FIX: Depth limit to prevent stack overflow DoS
+  if (depth > MAX_DEPTH) {
+    return '[Object: Max depth exceeded]';
+  }
+
   // Handle null/undefined
   if (arg === null) return null;
   if (arg === undefined) return undefined;
@@ -92,19 +122,37 @@ function sanitizeArgument(arg: unknown): unknown {
       };
     }
 
-    // Regular objects/arrays: recursively sanitize
+    // Regular arrays: recursively sanitize
     if (Array.isArray(obj)) {
-      return obj.map(sanitizeArgument);
+      // SECURITY FIX: Limit array size
+      if (obj.length > MAX_KEYS) {
+        logger.warn('Console message array truncated', {
+          originalLength: obj.length,
+          truncatedTo: MAX_KEYS,
+        });
+        return obj.slice(0, MAX_KEYS).map(item => sanitizeArgument(item, depth + 1));
+      }
+      return obj.map(item => sanitizeArgument(item, depth + 1));
     }
 
     // Plain objects: sanitize all values
-    const sanitized: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(obj)) {
-      // Sanitize both key and value
-      const safeKey = escapeHtml(String(key));
-      sanitized[safeKey] = sanitizeArgument(value);
+    const entries = Object.entries(obj);
+
+    // SECURITY FIX: Limit object size to prevent DoS
+    if (entries.length > MAX_KEYS) {
+      logger.warn('Console message object truncated', {
+        originalKeys: entries.length,
+        truncatedTo: MAX_KEYS,
+      });
+      const truncated = entries.slice(0, MAX_KEYS);
+      return Object.fromEntries(
+        truncated.map(([k, v]) => [escapeHtml(String(k)), sanitizeArgument(v, depth + 1)])
+      );
     }
-    return sanitized;
+
+    return Object.fromEntries(
+      entries.map(([k, v]) => [escapeHtml(String(k)), sanitizeArgument(v, depth + 1)])
+    );
   }
 
   // Fallback: convert to safe string
@@ -174,7 +222,7 @@ function validateMessageFormat(message: unknown): message is ConsoleMessage {
 export function sanitizeConsoleMessage(message: unknown): SanitizedConsoleMessage | null {
   // Validate format first
   if (!validateMessageFormat(message)) {
-    console.error('[Security] Invalid console message format', message);
+    logger.error('Invalid console message format', { message });
     return null;
   }
 

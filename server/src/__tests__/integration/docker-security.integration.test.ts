@@ -265,7 +265,7 @@ describe('Docker Security Integration Tests', () => {
   });
 
   describe('Capability Controls', () => {
-    test('should drop all capabilities and add minimal ones', async () => {
+    test('should drop all capabilities and add only CHOWN (CRITICAL-008: DAC_OVERRIDE removed)', async () => {
       const dockerAvailable = await isDockerAvailable();
       if (!dockerAvailable) {
         console.warn('Skipping test: Docker not available');
@@ -286,12 +286,46 @@ describe('Docker Security Integration Tests', () => {
       const container = docker.getContainer(session.containerId);
       const info = await container.inspect();
 
+      // Verify CapDrop
       expect(info.HostConfig.CapDrop).toEqual(CONTAINER_SECURITY_DEFAULTS.CapDrop);
       expect(info.HostConfig.CapDrop).toContain('ALL');
 
+      // Verify CapAdd - CRITICAL: Should only have CHOWN, NOT DAC_OVERRIDE
       expect(info.HostConfig.CapAdd).toEqual(CONTAINER_SECURITY_DEFAULTS.CapAdd);
       expect(info.HostConfig.CapAdd).toContain('CHOWN');
-      expect(info.HostConfig.CapAdd).toContain('DAC_OVERRIDE');
+      expect(info.HostConfig.CapAdd).not.toContain('DAC_OVERRIDE');
+
+      // Verify exactly one capability
+      expect(info.HostConfig.CapAdd).toHaveLength(1);
+    }, 30000);
+
+    test('SECURITY: Verify DAC_OVERRIDE is not present (privilege escalation prevention)', async () => {
+      const dockerAvailable = await isDockerAvailable();
+      if (!dockerAvailable) {
+        console.warn('Skipping test: Docker not available');
+        return;
+      }
+
+      const config: ContainerConfig = {
+        projectName: 'test-no-dac-override',
+        workspacePath: testWorkspacePath,
+        image: 'alpine:latest',
+      };
+
+      const session = await manager.createSession(config);
+      createdSessions.push(session.sessionId);
+
+      const docker = manager.getDockerClient();
+      const container = docker.getContainer(session.containerId);
+      const info = await container.inspect();
+
+      // CRITICAL: DAC_OVERRIDE must NOT be present
+      const capAdd = info.HostConfig.CapAdd || [];
+      expect(capAdd).not.toContain('DAC_OVERRIDE');
+
+      // Double-check by converting to uppercase (Docker may normalize)
+      const capAddUpper = capAdd.map((c: string) => c.toUpperCase());
+      expect(capAddUpper).not.toContain('DAC_OVERRIDE');
     }, 30000);
   });
 
@@ -497,9 +531,9 @@ describe('Docker Security Integration Tests', () => {
       // Filesystem
       expect(info.HostConfig.ReadonlyRootfs).toBe(true);
 
-      // Capabilities
+      // Capabilities - UPDATED: Only CHOWN expected
       expect(info.HostConfig.CapDrop).toContain('ALL');
-      expect(info.HostConfig.CapAdd).toEqual(['CHOWN', 'DAC_OVERRIDE']);
+      expect(info.HostConfig.CapAdd).toEqual(['CHOWN']);
 
       // Network
       expect(info.HostConfig.NetworkMode).toBe('bridge');

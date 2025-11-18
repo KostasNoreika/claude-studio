@@ -1,29 +1,111 @@
 version: '3.8'
 
 services:
+  # Docker Socket Proxy - Secure abstraction over Docker socket
+  # Provides filtered access to Docker API with read-only socket mount
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: claude-studio-docker-proxy
+    restart: unless-stopped
+
+    # Security: Only expose safe Docker API endpoints
+    environment:
+      # ALLOWED operations (read-only queries)
+      CONTAINERS: 1     # List, inspect containers
+      IMAGES: 1         # List, inspect images
+      INFO: 1           # Docker system info
+      VERSION: 1        # Docker version
+
+      # ALLOWED operations (container lifecycle)
+      POST: 1           # Create, start, stop, restart containers
+      DELETE: 1         # Remove containers
+
+      # DENIED operations (security-critical)
+      NETWORKS: 0       # Cannot create/modify networks
+      VOLUMES: 0        # Cannot create/modify volumes
+      EXEC: 0           # Cannot execute commands in containers
+      SWARM: 0          # No swarm management
+      SERVICES: 0       # No service management
+      TASKS: 0          # No task management
+      BUILD: 0          # Cannot build images
+      COMMIT: 0         # Cannot commit containers
+      CONFIGS: 0        # No config management
+      SECRETS: 0        # No secrets management
+      PLUGINS: 0        # No plugin management
+      NODES: 0          # No node management
+      DISTRIBUTION: 0   # No image distribution
+      SESSION: 0        # No session management
+
+    # CRITICAL: Read-only socket access
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+    # Internal network only - no external access
+    networks:
+      - docker-api
+
+    # Resource limits for proxy itself
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+
+    # Security hardening
+    security_opt:
+      - no-new-privileges:true
+
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Main application service
   claude-studio:
     build:
       context: .
       dockerfile: Dockerfile.prod
-    container_name: claude-studio-prod
+    container_name: claude-studio
     restart: unless-stopped
 
-    # Port exposure
-    ports:
-      - "127.0.0.1:3333:3333"  # IPv4 only
+    # Dependency: Proxy must start first
+    depends_on:
+      - docker-proxy
+
+    # NO port exposure - Traefik handles routing
+    # ports:
+    #   - "127.0.0.1:3333:3333"
 
     # Environment variables
     environment:
       - NODE_ENV=production
       - PORT=3333
       - LOG_LEVEL=info
-      - DOCKER_HOST=unix:///var/run/docker.sock
+      # SECURITY FIX: Use Docker socket proxy instead of direct socket
+      - DOCKER_HOST=tcp://docker-proxy:2375
+      # CRITICAL SECURITY: WebSocket authentication token
+      # MUST be set via environment variable, NEVER hardcoded
+      # Generate with: openssl rand -hex 32
+      # Set in deployment environment (e.g., Coolify secrets)
+      - WS_AUTH_TOKEN=${WS_AUTH_TOKEN}
+      - CLAUDE_ACCOUNT_DIR=/home/node/.claude-acc4
+      - CLAUDE_MANAGER_DIR=/home/node/.claude-manager
+      - MCP_DIR=/opt/mcp
 
-    # Docker socket access (required for container management)
+    # Volumes - NO DOCKER SOCKET (using proxy instead)
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # REMOVED: /var/run/docker.sock:/var/run/docker.sock:rw (SECURITY FIX)
       - /opt/dev:/opt/dev:ro
       - /opt/prod:/opt/prod:ro
+      - /opt/registry:/opt/registry:ro
+      - /opt/mcp:/opt/mcp:ro
+      - /Users/kostasnoreika/.claude-acc4:/home/node/.claude-acc4:ro
+      - /Users/kostasnoreika/.claude-manager:/home/node/.claude-manager:ro
 
     # Resource limits
     deploy:
@@ -50,20 +132,50 @@ services:
         max-size: "100m"
         max-file: "5"
 
-    # Network
+    # Networks - Both Coolify (for Traefik) and internal Docker API
     networks:
-      - claude-studio-network
+      - coolify
+      - docker-api
+
+    # Traefik routing labels (Cloudflare Tunnel → Traefik → this service)
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=coolify"
+
+      # HTTP Router for studio.noreika.lt
+      - "traefik.http.routers.studio.rule=Host(`studio.noreika.lt`)"
+      - "traefik.http.routers.studio.entrypoints=web,websecure"
+      - "traefik.http.routers.studio.priority=1"
+      - "traefik.http.routers.studio.service=studio"
+
+      # WebSocket Router for /ws endpoint (higher priority)
+      - "traefik.http.routers.studio-ws.rule=Host(`studio.noreika.lt`) && PathPrefix(`/ws`)"
+      - "traefik.http.routers.studio-ws.entrypoints=web,websecure"
+      - "traefik.http.routers.studio-ws.priority=10"
+      - "traefik.http.routers.studio-ws.service=studio"
+
+      # Service configuration (internal port 3333)
+      - "traefik.http.services.studio.loadbalancer.server.port=3333"
+      - "traefik.http.services.studio.loadbalancer.passhostheader=true"
+
+      # WebSocket support - ensure Traefik doesn't buffer WebSocket connections
+      - "traefik.http.services.studio.loadbalancer.server.scheme=http"
+      - "traefik.http.services.studio.loadbalancer.responseforwarding.flushinterval=1ms"
 
     # Security
     security_opt:
       - no-new-privileges:true
 
-    # User (non-root)
-    user: "1000:1000"
+    # User (non-root) - use node user from alpine image (UID 1000)
+    # Docker socket proxy eliminates need for socket permission adjustments
 
 networks:
-  claude-studio-network:
+  # External network for Traefik routing
+  coolify:
+    external: true
+
+  # Internal network for Docker API communication
+  # Containers on this network CANNOT reach external networks
+  docker-api:
+    internal: true
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16

@@ -6,7 +6,10 @@ RUN apk add --no-cache \
     git \
     build-base \
     python3 \
-    curl
+    curl \
+    jq \
+    vim \
+    nano
 
 # Install Claude CLI globally as root
 RUN npm install -g @anthropic-ai/claude-code
@@ -18,6 +21,12 @@ RUN mkdir -p /home/node/.npm && \
 
 # Create bash startup configuration for node user
 RUN echo '# .bashrc - bash configuration' > /home/node/.bashrc && \
+    echo '' >> /home/node/.bashrc && \
+    echo '# Terminal mode configuration for proper backspace/delete behavior' >> /home/node/.bashrc && \
+    echo 'if [ -t 0 ]; then' >> /home/node/.bashrc && \
+    echo '  stty erase ^? 2>/dev/null || true' >> /home/node/.bashrc && \
+    echo '  stty intr ^C 2>/dev/null || true' >> /home/node/.bashrc && \
+    echo 'fi' >> /home/node/.bashrc && \
     echo '' >> /home/node/.bashrc && \
     echo '# Terminal colors' >> /home/node/.bashrc && \
     echo 'export TERM=xterm-256color' >> /home/node/.bashrc && \
@@ -37,6 +46,9 @@ RUN echo '# .bashrc - bash configuration' > /home/node/.bashrc && \
     echo 'alias grep="grep --color=auto"' >> /home/node/.bashrc && \
     echo 'alias egrep="egrep --color=auto"' >> /home/node/.bashrc && \
     echo 'alias fgrep="fgrep --color=auto"' >> /home/node/.bashrc && \
+    echo '' >> /home/node/.bashrc && \
+    echo '# Claude CLI shortcut (c = smart claude with MCP config restore)' >> /home/node/.bashrc && \
+    echo 'alias c="~/.claude-manager/bin/smart-selection"' >> /home/node/.bashrc && \
     echo '' >> /home/node/.bashrc && \
     echo '# Enhanced command prompt features' >> /home/node/.bashrc && \
     echo 'shopt -s histappend' >> /home/node/.bashrc && \

@@ -1,5 +1,7 @@
 import request from 'supertest';
-import app from '../../app';
+import { createApp } from '../../app';
+
+const app = createApp();
 
 describe('GET /api/health', () => {
   it('should return 200 status', async () => {

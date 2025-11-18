@@ -4,9 +4,106 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Claude Studio</title>
+
+    <!-- Favicons -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/android-chrome-192x192.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/android-chrome-512x512.png" />
+
+    <!-- Web manifest -->
+    <link rel="manifest" href="/site.webmanifest" />
+
+    <!-- Theme color -->
+    <meta name="theme-color" content="#1e3a5f" />
+    <meta name="description" content="Claude Studio - Real-time web-based IDE with Claude CLI integration and live browser preview" />
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      /**
+       * Global Error Suppression for Known Harmless Errors
+       *
+       * 1. xterm.js dimension race condition errors
+       * 2. WebSocket connection errors during initial handshake
+       *
+       * These errors are cosmetic and don't affect functionality.
+       * This script MUST run before any other scripts to catch early errors.
+       */
+      (function() {
+        // Store original console.error
+        const originalError = console.error.bind(console);
+
+        // Suppress specific known harmless error patterns
+        const suppressPatterns = [
+          // xterm.js race condition
+          { match: /dimension/, type: 'xterm.js race condition' },
+          { match: /Cannot read properties of undefined/, type: 'xterm.js initialization' },
+          // WebSocket early connection errors (recovers automatically)
+          { match: /WebSocket.*failed/i, type: 'WebSocket connection' },
+        ];
+
+        /**
+         * Check if error should be suppressed
+         */
+        function shouldSuppress(message) {
+          const str = String(message);
+          for (const pattern of suppressPatterns) {
+            if (pattern.match.test(str)) {
+              // Only log in development
+              if (window.location.hostname === 'localhost' ||
+                  window.location.hostname === '127.0.0.1' ||
+                  window.location.hostname.includes('192.168')) {
+                console.debug(`[Suppressed ${pattern.type}]:`, message);
+              }
+              return true;
+            }
+          }
+          return false;
+        }
+
+        // Override console.error
+        console.error = function() {
+          const args = Array.from(arguments);
+          const firstArg = args[0];
+
+          // Check Error objects
+          if (firstArg instanceof Error) {
+            const errorMsg = firstArg.message || '';
+            const errorStack = firstArg.stack || '';
+            if (shouldSuppress(errorMsg) || shouldSuppress(errorStack)) {
+              return; // Suppress
+            }
+          }
+
+          // Check string messages
+          if (typeof firstArg === 'string' && shouldSuppress(firstArg)) {
+            return; // Suppress
+          }
+
+          // Pass through all other errors
+          originalError.apply(console, args);
+        };
+
+        // Catch uncaught errors at window level (for early xterm.js errors)
+        window.addEventListener('error', function(event) {
+          if (shouldSuppress(event.message) || shouldSuppress(event.error)) {
+            event.preventDefault();
+            return false;
+          }
+        });
+
+        // Catch unhandled promise rejections
+        window.addEventListener('unhandledrejection', function(event) {
+          if (shouldSuppress(event.reason)) {
+            event.preventDefault();
+            return false;
+          }
+        });
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

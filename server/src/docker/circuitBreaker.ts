@@ -11,6 +11,8 @@
  * - HALF_OPEN: Testing if service has recovered
  */
 
+import { logger } from '../utils/logger';
+
 export enum CircuitBreakerState {
   CLOSED = 'CLOSED',
   OPEN = 'OPEN',
@@ -166,7 +168,10 @@ export class CircuitBreaker {
     const oldState = this.state;
     if (oldState !== newState) {
       this.state = newState;
-      console.log(`Circuit breaker state: ${oldState} → ${newState}`);
+      logger.info('Circuit breaker state transition', {
+        oldState,
+        newState
+      });
 
       if (this.onStateChange) {
         this.onStateChange(oldState, newState);
@@ -233,6 +238,6 @@ export const dockerCircuitBreaker = new CircuitBreaker({
   successThreshold: 2,
   monitoringWindow: 60000,
   onStateChange: (oldState, newState) => {
-    console.warn(`[CircuitBreaker] Docker operations: ${oldState} → ${newState}`);
+    logger.warn('Docker circuit breaker state change', { oldState, newState });
   },
 });

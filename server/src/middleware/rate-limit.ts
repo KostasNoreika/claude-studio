@@ -43,11 +43,11 @@ export const containerRateLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => {
-    // Rate limit per IP + session (more granular)
-    const ip = req.ip || 'unknown';
-    const session = req.body?.sessionId || req.query?.sessionId || '';
-    return `${ip}-${session}`;
+  // Use default keyGenerator for IPv6 compatibility
+  // Custom logic for session-based limiting can be added via skip function
+  skip: (_req) => {
+    // Could implement session-based skip logic here if needed
+    return false;
   },
 });
 

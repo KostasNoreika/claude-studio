@@ -7,6 +7,7 @@
  */
 
 import { isRetryableError } from './errors';
+import { logger } from '../utils/logger';
 
 export interface RetryOptions {
   /**
@@ -99,10 +100,12 @@ export async function retry<T>(
       }
 
       // Log retry attempt
-      console.log(
-        `[Retry] Attempt ${attempt + 1}/${maxRetries} failed. Retrying in ${nextDelay}ms...`,
-        { error: lastError.message }
-      );
+      logger.warn('Retry attempt failed, retrying...', {
+        attempt: attempt + 1,
+        maxRetries,
+        nextDelayMs: nextDelay,
+        error: lastError.message
+      });
 
       // Wait before retrying
       await sleep(nextDelay);
@@ -141,36 +144,4 @@ export async function retryWithBackoff<T>(
  */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Retry decorator for class methods
- *
- * @example
- * ```typescript
- * class MyService {
- *   @Retry({ maxRetries: 3 })
- *   async fetchData() {
- *     // ...
- *   }
- * }
- * ```
- */
-export function Retry(options: RetryOptions = {}) {
-  return function (
-    target: unknown,
-    propertyKey: string,
-    descriptor: PropertyDescriptor
-  ) {
-    const originalMethod = descriptor.value;
-
-    descriptor.value = async function (...args: unknown[]) {
-      return retry(
-        async () => originalMethod.apply(this, args),
-        options
-      );
-    };
-
-    return descriptor;
-  };
 }

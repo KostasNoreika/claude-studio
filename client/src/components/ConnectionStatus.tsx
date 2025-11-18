@@ -1,13 +1,16 @@
 import React from 'react';
 import { ConnectionState } from '../services/websocket';
+import { ProjectSelector, Project } from './ProjectSelector';
 import './ConnectionStatus.css';
 
 interface ConnectionStatusProps {
   status: ConnectionState;
   sessionId: string | null;
+  currentProject?: string;
+  onProjectChange?: (project: Project) => void;
 }
 
-export function ConnectionStatus({ status, sessionId }: ConnectionStatusProps) {
+export function ConnectionStatus({ status, sessionId, currentProject, onProjectChange }: ConnectionStatusProps) {
   const getStatusColor = () => {
     switch (status) {
       case 'connected':
@@ -44,6 +47,14 @@ export function ConnectionStatus({ status, sessionId }: ConnectionStatusProps) {
         <div className={`status-dot ${getStatusColor()}`} />
         <span className="status-text">{getStatusText()}</span>
       </div>
+
+      {onProjectChange && (
+        <ProjectSelector
+          currentProject={currentProject}
+          onProjectChange={onProjectChange}
+        />
+      )}
+
       {sessionId && (
         <div className="session-id">
           <span>Session: {sessionId.substring(0, 12)}...</span>

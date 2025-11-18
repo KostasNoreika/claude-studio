@@ -5,7 +5,7 @@
  * Full integration tests will be added in P02-T007.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { WebSocketClient } from '../../services/websocket';
 
 describe('WebSocketClient', () => {
@@ -88,5 +88,43 @@ describe('WebSocketClient', () => {
     });
 
     client.connect();
+  });
+
+  it('should not attempt reconnection after intentional disconnect', () => {
+    // Create a spy to track reconnection attempts
+    const attemptReconnectSpy = vi.spyOn(client as any, 'attemptReconnect');
+
+    // Connect first
+    client.connect();
+
+    // Intentionally disconnect
+    client.disconnect();
+
+    // Manually trigger handleClose to simulate connection closure
+    (client as any).handleClose();
+
+    // Should not call attemptReconnect because shouldReconnect is false
+    expect(attemptReconnectSpy).not.toHaveBeenCalled();
+
+    attemptReconnectSpy.mockRestore();
+  });
+
+  it('should attempt reconnection on unexpected disconnection', () => {
+    // Create a spy to track reconnection attempts
+    const attemptReconnectSpy = vi.spyOn(client as any, 'attemptReconnect');
+
+    // Connect first
+    client.connect();
+
+    // Simulate unexpected disconnection (not calling disconnect())
+    (client as any).handleClose();
+
+    // Should attempt reconnection
+    expect(attemptReconnectSpy).toHaveBeenCalled();
+
+    attemptReconnectSpy.mockRestore();
+
+    // Clean up
+    client.disconnect();
   });
 });

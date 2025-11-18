@@ -6,6 +6,8 @@
  * Thread-safe in-memory storage (could be Redis in production)
  */
 
+import { validatePort } from '../security/ssrf-validator';
+
 export interface PortConfig {
   sessionId: string;
   port: number;
@@ -22,8 +24,20 @@ class PortConfigManager {
 
   /**
    * Configure port for a session
+   * SECURITY FIX (HIGH-003): Added port validation using SSRF validator
+   *
+   * @throws {Error} If port is invalid or outside allowed range
    */
   setPortForSession(sessionId: string, port: number): PortConfig {
+    // SECURITY FIX (HIGH-003): Validate port using SSRF validator
+    // Ensures port is in allowed range (3000-9999) and not blacklisted
+    if (!validatePort(port)) {
+      throw new Error(
+        `Invalid port ${port}: must be in range 3000-9999 and not blacklisted. ` +
+        `Common blocked ports: 22 (SSH), 3306 (MySQL), 5432 (PostgreSQL), etc.`
+      );
+    }
+
     const config: PortConfig = {
       sessionId,
       port,

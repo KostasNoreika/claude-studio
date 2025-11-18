@@ -12,19 +12,17 @@
  */
 
 import Docker from 'dockerode';
-import { randomBytes } from 'crypto';
 import { resolve, isAbsolute } from 'path';
 import { Writable, Readable } from 'stream';
+import { generateSessionId } from '@shared';
 import {
   ContainerConfig,
   ContainerSession,
   CONTAINER_SECURITY_DEFAULTS,
 } from './types';
 import {
-  ContainerError,
   ContainerCreationError,
   ContainerNotFoundError,
-  DockerDaemonError,
   StreamAttachmentError,
   ContainerStateError,
   SessionNotFoundError,
@@ -34,20 +32,63 @@ import {
 import { dockerCircuitBreaker } from './circuitBreaker';
 import { retryWithBackoff } from './retry';
 import { FileWatcher } from '../watcher/FileWatcher';
+import { logger } from '../utils/logger';
+import { claudeAccountDir, claudeManagerDir, mcpDir } from '../config/env';
 
 export class ContainerManager {
   private static instance: ContainerManager;
   private docker: Docker;
   private sessions: Map<string, ContainerSession>;
   private healthCheckInterval: NodeJS.Timeout | null = null;
+  private allowedWorkspacePaths: string[];
 
   /**
    * Private constructor for singleton pattern
    */
   private constructor() {
-    // Connect to Docker daemon using Unix socket (Mac Studio)
-    this.docker = new Docker({ socketPath: '/var/run/docker.sock' });
+    // Connect to Docker daemon
+    // Supports both Unix socket (development) and TCP (production with proxy)
+    const dockerHost = process.env.DOCKER_HOST || '/var/run/docker.sock';
+
+    // Parse DOCKER_HOST: supports both unix:///path and tcp://host:port
+    if (dockerHost.startsWith('tcp://')) {
+      const url = dockerHost.replace('tcp://', '');
+      const [host, portStr] = url.split(':');
+      const port = parseInt(portStr) || 2375;
+
+      this.docker = new Docker({
+        host: host,
+        port: port,
+      });
+
+      logger.info('Docker client initialized', {
+        mode: 'tcp',
+        host: host,
+        port: port,
+      });
+    } else {
+      // Unix socket (remove unix:// prefix if present)
+      const socketPath = dockerHost.replace('unix://', '');
+      this.docker = new Docker({ socketPath });
+
+      logger.info('Docker client initialized', {
+        mode: 'socket',
+        path: socketPath,
+      });
+    }
+
     this.sessions = new Map();
+
+    // SECURITY FIX (HIGH-001): Load allowed workspace paths from environment
+    // Defaults to /opt/dev and /opt/prod if not configured
+    const allowedPathsEnv = process.env.ALLOWED_WORKSPACE_PATHS;
+    this.allowedWorkspacePaths = allowedPathsEnv
+      ? allowedPathsEnv.split(',').map(p => p.trim())
+      : ['/opt/dev', '/opt/prod'];
+
+    logger.info('Container Manager initialized', {
+      allowedWorkspacePaths: this.allowedWorkspacePaths,
+    });
 
     // Start health monitoring
     this.startHealthMonitoring();
@@ -64,15 +105,10 @@ export class ContainerManager {
   }
 
   /**
-   * Generate unique session ID
-   */
-  private generateSessionId(): string {
-    return 'session-' + randomBytes(16).toString('hex');
-  }
-
-  /**
    * Validate workspace path for security
-   * Must be absolute path and exist
+   * SECURITY FIX (HIGH-001): Use environment-configured allowed paths
+   *
+   * Must be absolute path and within allowed directories
    */
   private validateWorkspacePath(path: string): void {
     if (!isAbsolute(path)) {
@@ -85,9 +121,20 @@ export class ContainerManager {
       throw new Error('Workspace path contains suspicious patterns: ' + path);
     }
 
-    // Path should start with /opt/dev/ or /opt/prod/ (project structure)
-    if (!normalized.startsWith('/opt/dev/') && !normalized.startsWith('/opt/prod/')) {
-      throw new Error('Workspace path must be in /opt/dev/ or /opt/prod/: ' + path);
+    // SECURITY FIX (HIGH-001): Check against environment-configured allowed paths
+    // Path must start with one of the allowed directory prefixes
+    const isAllowed = this.allowedWorkspacePaths.some(allowed => {
+      // Ensure the path starts with allowed directory + separator
+      // This prevents /opt/dev-malicious from matching /opt/dev
+      return normalized.startsWith(allowed + '/') || normalized === allowed;
+    });
+
+    if (!isAllowed) {
+      throw new Error(
+        'Workspace path must be in allowed directories: ' +
+        this.allowedWorkspacePaths.join(', ') +
+        '. Got: ' + path
+      );
     }
   }
 
@@ -96,7 +143,7 @@ export class ContainerManager {
    * P03-T009: Enhanced with comprehensive error handling
    *
    * Security features:
-   * - Read-only root filesystem
+   * - Read-only root filesystem with tmpfs overlays for writable directories
    * - Non-root user (1000:1000)
    * - Dropped capabilities (ALL) with minimal additions
    * - Memory limit: 1GB
@@ -104,19 +151,14 @@ export class ContainerManager {
    * - Network isolation
    */
   public async createSession(config: ContainerConfig): Promise<ContainerSession> {
-    const sessionId = this.generateSessionId();
+    const sessionId = generateSessionId();
 
     try {
       // Validate workspace path
       this.validateWorkspacePath(config.workspacePath);
 
-      // Prepare environment variables
-      const env = Object.entries(config.env || {}).map(
-        ([key, value]) => key + '=' + value
-      );
-
-      // Image to use (default: claude-studio-sandbox)
-      const image = config.image || 'claude-studio-sandbox:latest';
+      // Prepare configuration
+      const { env, image } = this.validateContainerConfig(config);
 
       // Create session object
       const session: ContainerSession = {
@@ -132,99 +174,48 @@ export class ContainerManager {
       this.sessions.set(sessionId, session);
 
       try {
+        // Build Docker create options
+        const createOptions = this.buildDockerCreateOptions(sessionId, config, env, image);
+
         // Create container with circuit breaker protection
         const container = await dockerCircuitBreaker.execute(async () => {
-          return await this.docker.createContainer({
-            Image: image,
-            name: 'claude-studio-' + sessionId,
-
-            // Security: Run as non-root user
-            User: CONTAINER_SECURITY_DEFAULTS.User,
-
-            // Environment variables
-            Env: env,
-
-            // Working directory
-            WorkingDir: '/workspace',
-
-            // Labels for identification
-            Labels: {
-              'claude-studio.session-id': sessionId,
-              'claude-studio.project': config.projectName,
-              'claude-studio.managed': 'true',
-            },
-
-            // Host configuration (security critical)
-            HostConfig: {
-              // Read-only root filesystem
-              ReadonlyRootfs: config.securityOptions?.readonlyRootfs ?? CONTAINER_SECURITY_DEFAULTS.ReadonlyRootfs,
-
-              // Memory limit (default 1GB)
-              Memory: config.securityOptions?.memoryLimit ?? CONTAINER_SECURITY_DEFAULTS.Memory,
-
-              // CPU shares (default 512)
-              CpuShares: config.securityOptions?.cpuShares ?? CONTAINER_SECURITY_DEFAULTS.CpuShares,
-
-              // Capability controls (DROP ALL, ADD minimal)
-              CapDrop: CONTAINER_SECURITY_DEFAULTS.CapDrop,
-              CapAdd: CONTAINER_SECURITY_DEFAULTS.CapAdd,
-
-              // Network mode
-              NetworkMode: CONTAINER_SECURITY_DEFAULTS.NetworkMode,
-
-              // Security options
-              SecurityOpt: CONTAINER_SECURITY_DEFAULTS.SecurityOpt,
-
-              // Mount workspace as bind (only allowed mount)
-              Binds: [
-                config.workspacePath + ':/workspace',
-              ],
-
-              // NO privileged mode
-              Privileged: CONTAINER_SECURITY_DEFAULTS.Privileged,
-
-              // Auto-remove on stop
-              AutoRemove: true,
-            },
-
-            // Keep container running (will execute commands via exec)
-            Cmd: ['/bin/sh', '-c', 'tail -f /dev/null'],
-          });
+          return await this.docker.createContainer(createOptions);
         });
 
-        // Start the container with retry logic
-        await retryWithBackoff(
-          async () => await container.start(),
-          { maxRetries: 2, initialDelay: 500 }
-        );
+        // Start container with retry logic
+        await this.startContainerWithRetry(container);
 
         // Update session with container ID
         session.containerId = container.id;
         session.status = 'running';
 
-        // P07-T003: Create and start FileWatcher for this session
-        const fileWatcher = new FileWatcher({
-          watchPath: config.workspacePath,
-          debounceDelay: 500,
-        });
-        session.fileWatcher = fileWatcher;
-        fileWatcher.start();
-
-        console.log(`[ContainerManager] Created file watcher for session: ${sessionId}`);
+        // Initialize file watcher
+        this.initializeFileWatcher(session, config);
 
         this.sessions.set(sessionId, session);
 
-        console.log(`[ContainerManager] Created session: ${sessionId} (${config.projectName})`);
+        logger.info('Container session created successfully', {
+          sessionId,
+          containerId: container.id,
+          projectName: config.projectName,
+          workspacePath: config.workspacePath,
+          image,
+        });
 
         return session;
-      } catch (error) {
+      } catch {
         // Update session with error
         session.status = 'error';
         const containerError = toContainerError(error);
         session.error = containerError.message;
         this.sessions.set(sessionId, session);
 
-        console.error(`[ContainerManager] Failed to create session: ${sessionId}`, containerError.toLogData());
+        logger.error('Failed to create container session', {
+          sessionId,
+          projectName: config.projectName,
+          image,
+          error: containerError.toLogData(),
+        });
 
         // Throw typed error
         throw new ContainerCreationError(
@@ -237,7 +228,7 @@ export class ContainerManager {
           }
         );
       }
-    } catch (error) {
+    } catch {
       // Validation errors
       if (error instanceof SessionValidationError || error instanceof ContainerCreationError) {
         throw error;
@@ -249,6 +240,175 @@ export class ContainerManager {
         { sessionId, originalError: String(error) }
       );
     }
+  }
+
+  /**
+   * Validate and prepare container configuration
+   */
+  private validateContainerConfig(config: ContainerConfig): { env: string[]; image: string } {
+    // Prepare environment variables
+    const env = Object.entries(config.env || {}).map(
+      ([key, value]) => key + '=' + value
+    );
+
+    // Image to use (default: claude-studio-sandbox)
+    const image = config.image || 'claude-studio-sandbox:latest';
+
+    return { env, image };
+  }
+
+  /**
+   * Build Docker container creation options
+   */
+  private buildDockerCreateOptions(
+    sessionId: string,
+    config: ContainerConfig,
+    env: string[],
+    image: string
+  ): any {
+    return {
+      Image: image,
+      name: 'claude-studio-' + sessionId,
+
+      // Security: Run as non-root user
+      User: CONTAINER_SECURITY_DEFAULTS.User,
+
+      // Environment variables
+      Env: env,
+
+      // Working directory
+      WorkingDir: '/workspace',
+
+      // Labels for identification
+      Labels: {
+        'claude-studio.session-id': sessionId,
+        'claude-studio.project': config.projectName,
+        'claude-studio.managed': 'true',
+      },
+
+      // Enable interactive terminal
+      Tty: true,
+      OpenStdin: true,
+      AttachStdin: true,
+      AttachStdout: true,
+      AttachStderr: true,
+
+      // Host configuration (security critical)
+      HostConfig: {
+        // SECURITY: Read-only root filesystem
+        // Prevents modification of system binaries, libraries, and configuration
+        // Only explicitly mounted tmpfs and bind-mounted directories are writable
+        ReadonlyRootfs: config.securityOptions?.readonlyRootfs ?? CONTAINER_SECURITY_DEFAULTS.ReadonlyRootfs,
+
+        // Memory limit (default 1GB)
+        Memory: config.securityOptions?.memoryLimit ?? CONTAINER_SECURITY_DEFAULTS.Memory,
+
+        // CPU shares (default 512)
+        CpuShares: config.securityOptions?.cpuShares ?? CONTAINER_SECURITY_DEFAULTS.CpuShares,
+
+        // Capability controls (DROP ALL, ADD minimal)
+        CapDrop: CONTAINER_SECURITY_DEFAULTS.CapDrop,
+        CapAdd: CONTAINER_SECURITY_DEFAULTS.CapAdd,
+
+        // Network mode
+        NetworkMode: CONTAINER_SECURITY_DEFAULTS.NetworkMode,
+
+        // Security options
+        SecurityOpt: CONTAINER_SECURITY_DEFAULTS.SecurityOpt,
+
+        // SECURITY FIX (CRITICAL-001, CRITICAL-004):
+        // Mount credential directories using configurable paths from environment
+        // Credential paths are now validated at startup in src/config/env.ts
+        // Read-only mounts (:ro) for credentials to prevent modification
+        // Read-write mounts (:rw) only where absolutely necessary
+        Binds: [
+          // Project workspace (read-write) - REQUIRED for file editing and project work
+          config.workspacePath + ':/workspace:rw',
+
+          // Host Claude account directory (READ-ONLY) - shares API key, session, MCP configs
+          // Using acc4 as default account for container sessions (claudecode43@paysera.net)
+          // SECURITY: Read-only prevents malicious code from modifying credentials
+          claudeAccountDir + ':/home/node/.claude-acc4:ro',
+
+          // CRITICAL: Mount .claude.json FILE directly (Claude CLI reads this for OAuth)
+          // SECURITY: Read-only prevents OAuth token theft or modification
+          claudeAccountDir + '/.claude.json:/home/node/.claude.json:ro',
+
+          // Mount .claude directory for other configs (READ-ONLY)
+          // SECURITY: Prevents modification of Claude CLI configuration
+          claudeAccountDir + '/.claude:/home/node/.claude:ro',
+
+          // Host MCP configs (READ-ONLY) - shares all MCP servers
+          // SECURITY: Containers should not modify shared MCP configurations
+          mcpDir + ':/opt/mcp:ro',
+
+          // claude-manager scripts (READ-WRITE) - for 'c' alias
+          // JUSTIFICATION: Scripts need to write logs and cache files for functionality
+          // RISK: Low - scripts are trusted, and only affect container filesystem
+          claudeManagerDir + ':/home/node/.claude-manager:rw',
+        ],
+
+        // SECURITY: tmpfs mounts for writable directories (with ReadonlyRootfs=true)
+        // These are in-memory temporary filesystems that don't persist across container restarts
+        // This allows processes to write temporary data while maintaining read-only root filesystem
+        Tmpfs: {
+          // System temporary directory - 500MB limit
+          // Used by various system utilities and temporary file operations
+          '/tmp': 'rw,size=500m,mode=1777,uid=1000,gid=1000',
+
+          // User configuration directory - 100MB limit
+          // Claude CLI writes config files to ~/.config/
+          // Must be writable for Claude CLI to store preferences and settings
+          '/home/node/.config': 'rw,size=100m,mode=0755,uid=1000,gid=1000',
+
+          // User cache directory - 200MB limit
+          // Used by npm, Claude CLI, and other tools for caching
+          // Improves performance by avoiding repeated downloads/compilations
+          '/home/node/.cache': 'rw,size=200m,mode=0755,uid=1000,gid=1000',
+
+          // npm global packages directory - 100MB limit
+          // Allows user to install global npm packages during session
+          // From Dockerfile: npm config set prefix /home/node/.npm
+          '/home/node/.npm': 'rw,size=100m,mode=0755,uid=1000,gid=1000',
+        },
+
+        // NO privileged mode
+        Privileged: CONTAINER_SECURITY_DEFAULTS.Privileged,
+
+        // Auto-remove on stop
+        AutoRemove: true,
+      },
+
+      // Run interactive login bash shell (loads .bashrc with aliases like 'c')
+      Cmd: ['/bin/bash', '-l'],
+    };
+  }
+
+  /**
+   * Start container with retry logic
+   */
+  private async startContainerWithRetry(container: Docker.Container): Promise<void> {
+    await retryWithBackoff(
+      async () => await container.start(),
+      { maxRetries: 2, initialDelay: 500 }
+    );
+  }
+
+  /**
+   * Initialize file watcher for session
+   */
+  private initializeFileWatcher(session: ContainerSession, config: ContainerConfig): void {
+    const fileWatcher = new FileWatcher({
+      watchPath: config.workspacePath,
+      debounceDelay: 500,
+    });
+    session.fileWatcher = fileWatcher;
+    fileWatcher.start();
+
+    logger.info('File watcher created', {
+      sessionId: session.sessionId,
+      watchPath: config.workspacePath,
+    });
   }
 
   /**
@@ -269,7 +429,7 @@ export class ContainerManager {
       // P07-T003: Stop file watcher
       if (session.fileWatcher) {
         await session.fileWatcher.stop();
-        console.log(`[ContainerManager] Stopped file watcher for session: ${sessionId}`);
+        logger.info('File watcher stopped', { sessionId });
       }
 
       const container = this.docker.getContainer(session.containerId);
@@ -283,11 +443,14 @@ export class ContainerManager {
       session.status = 'stopped';
       this.sessions.set(sessionId, session);
 
-      console.log(`[ContainerManager] Stopped session: ${sessionId}`);
+      logger.info('Container session stopped successfully', {
+        sessionId,
+        containerId: session.containerId,
+      });
 
       // Remove from active sessions
       this.sessions.delete(sessionId);
-    } catch (error) {
+    } catch {
       // If container doesn't exist or already stopped, just remove from sessions
       if (
         error instanceof Error &&
@@ -295,7 +458,7 @@ export class ContainerManager {
           error.message.includes('already stopped') ||
           error.message.includes('not running'))
       ) {
-        console.log(`[ContainerManager] Container already stopped: ${sessionId}`);
+        logger.info('Container already stopped', { sessionId });
 
         // Still stop file watcher if exists
         if (session.fileWatcher) {
@@ -312,7 +475,11 @@ export class ContainerManager {
       session.error = containerError.message;
       this.sessions.set(sessionId, session);
 
-      console.error(`[ContainerManager] Failed to stop session: ${sessionId}`, containerError.toLogData());
+      logger.error('Failed to stop container session', {
+        sessionId,
+        containerId: session.containerId,
+        error: containerError.toLogData(),
+      });
 
       throw new ContainerStateError(
         containerError.message,
@@ -338,7 +505,7 @@ export class ContainerManager {
       const container = this.docker.getContainer(containerId);
       const info = await container.inspect();
       return info.State.Running === true;
-    } catch (error) {
+    } catch {
       return false;
     }
   }
@@ -375,7 +542,7 @@ export class ContainerManager {
         },
       });
 
-      console.log('Found ' + containers.length + ' managed containers to cleanup');
+      logger.info('Found managed containers to cleanup', { count: containers.length });
 
       let cleanedUp = 0;
       for (const containerInfo of containers) {
@@ -391,16 +558,25 @@ export class ContainerManager {
           await container.remove({ force: true });
           cleanedUp++;
 
-          console.log('Cleaned up zombie container: ' + containerInfo.Id.substring(0, 12));
-        } catch (error) {
-          console.error('Failed to cleanup container ' + containerInfo.Id.substring(0, 12) + ':', error);
+          logger.debug('Cleaned up zombie container', {
+            containerId: containerInfo.Id.substring(0, 12),
+            state: containerInfo.State,
+          });
+        } catch {
+          logger.warn('Failed to cleanup container', {
+            containerId: containerInfo.Id.substring(0, 12),
+            error,
+          });
         }
       }
 
-      console.log('Cleanup complete: ' + cleanedUp + '/' + containers.length + ' containers removed');
+      logger.info('Cleanup complete', {
+        cleanedUp,
+        total: containers.length,
+      });
       return cleanedUp;
-    } catch (error) {
-      console.error('Failed to cleanup zombie containers:', error);
+    } catch {
+      logger.error('Failed to cleanup zombie containers', { error });
       throw error;
     }
   }
@@ -422,8 +598,8 @@ export class ContainerManager {
         return await this.docker.ping();
       });
       return true;
-    } catch (error) {
-      console.error('[ContainerManager] Docker health check failed:', error);
+    } catch {
+      logger.error('Docker health check failed', { error });
       return false;
     }
   }
@@ -437,8 +613,8 @@ export class ContainerManager {
     this.healthCheckInterval = setInterval(async () => {
       try {
         await this.monitorContainerHealth();
-      } catch (error) {
-        console.error('[ContainerManager] Health monitoring error:', error);
+      } catch {
+        logger.error('Health monitoring error', { error });
       }
     }, 30000);
 
@@ -447,7 +623,7 @@ export class ContainerManager {
       this.healthCheckInterval.unref();
     }
 
-    console.log('[ContainerManager] Health monitoring started (interval: 30s)');
+    logger.info('Health monitoring started', { interval: '30s' });
   }
 
   /**
@@ -466,7 +642,10 @@ export class ContainerManager {
         const isRunning = await this.isContainerRunning(session.containerId);
 
         if (!isRunning) {
-          console.warn(`[ContainerManager] Container crashed: ${session.sessionId}`);
+          logger.warn('Container crashed or stopped unexpectedly', {
+            sessionId: session.sessionId,
+            containerId: session.containerId,
+          });
 
           // Update session status
           session.status = 'error';
@@ -475,9 +654,12 @@ export class ContainerManager {
 
           // Note: Do not delete session - allow reconnection attempts to see error
         }
-      } catch (error) {
+      } catch {
         // Ignore errors during health check (container might be stopping)
-        console.debug(`[ContainerManager] Health check error for ${session.sessionId}:`, error);
+        logger.debug('Health check error', {
+          sessionId: session.sessionId,
+          error,
+        });
       }
     }
   }
@@ -489,7 +671,7 @@ export class ContainerManager {
     if (this.healthCheckInterval) {
       clearInterval(this.healthCheckInterval);
       this.healthCheckInterval = null;
-      console.log('[ContainerManager] Health monitoring stopped');
+      logger.info('Health monitoring stopped');
     }
   }
 
@@ -512,29 +694,45 @@ export class ContainerManager {
 
       const container = this.docker.getContainer(containerId);
 
-      // Attach with retry logic
-      const stream = await retryWithBackoff(
-        async () => await container.attach({
-          stream: true,
-          stdin: true,
-          stdout: true,
-          stderr: true,
+      // Create interactive bash exec with TTY
+      const exec = await retryWithBackoff(
+        async () => await container.exec({
+          Cmd: ['/bin/bash', '-l'], // Login shell to load .bashrc and aliases
+          AttachStdin: true,
+          AttachStdout: true,
+          AttachStderr: true,
+          Tty: true,
         }),
         { maxRetries: 2, initialDelay: 500 }
       );
 
-      console.log(`[ContainerManager] Attached to container streams: ${containerId.substring(0, 12)}`);
+      // Start the exec and get the stream
+      const stream = await retryWithBackoff(
+        async () => await exec.start({
+          hijack: true,
+          stdin: true,
+          Tty: true,
+        }),
+        { maxRetries: 2, initialDelay: 500 }
+      );
 
-      // Docker returns a single multiplexed stream
-      // For now, use it for all I/O (proper demultiplexing is a future enhancement)
+      logger.info('Attached to container streams via exec', {
+        containerId: containerId.substring(0, 12),
+      });
+
+      // With TTY enabled, Docker returns a single raw stream for all I/O
+      // Use the same stream for stdin, stdout, and stderr
       return {
         stdin: stream as unknown as Writable,
         stdout: stream as unknown as Readable,
         stderr: stream as unknown as Readable,
       };
-    } catch (error) {
+    } catch {
       const streamError = toContainerError(error);
-      console.error(`[ContainerManager] Failed to attach streams: ${containerId.substring(0, 12)}`, streamError.toLogData());
+      logger.error('Failed to attach to container streams', {
+        containerId: containerId.substring(0, 12),
+        error: streamError.toLogData(),
+      });
 
       throw new StreamAttachmentError(
         streamError.message,
@@ -556,14 +754,19 @@ export class ContainerManager {
     stream?: Writable
   ): void {
     if (!stream) {
-      console.warn('No stream provided for container: ' + containerId);
+      logger.warn('No stream provided for container stdin write', {
+        containerId: containerId.substring(0, 12)
+      });
       return;
     }
 
     try {
       stream.write(data);
-    } catch (error) {
-      console.error('Failed to write to container stdin: ' + containerId, error);
+    } catch {
+      logger.error('Failed to write to container stdin', {
+        containerId: containerId.substring(0, 12),
+        error
+      });
     }
   }
 
@@ -581,14 +784,19 @@ export class ContainerManager {
     stream?: Writable
   ): void {
     if (!stream) {
-      console.warn('No stream provided for container: ' + containerId);
+      logger.warn('No stream provided for container buffer write', {
+        containerId: containerId.substring(0, 12)
+      });
       return;
     }
 
     try {
       stream.write(data);
-    } catch (error) {
-      console.error('Failed to write buffer to container stdin: ' + containerId, error);
+    } catch {
+      logger.error('Failed to write buffer to container stdin', {
+        containerId: containerId.substring(0, 12),
+        error
+      });
     }
   }
 
@@ -607,9 +815,16 @@ export class ContainerManager {
 
     try {
       await container.kill({ signal });
-      console.log('Signal ' + signal + ' sent to container: ' + containerId);
-    } catch (error) {
-      console.error('Failed to send signal to container: ' + containerId, error);
+      logger.info('Signal sent to container', {
+        containerId: containerId.substring(0, 12),
+        signal
+      });
+    } catch {
+      logger.error('Failed to send signal to container', {
+        containerId: containerId.substring(0, 12),
+        signal,
+        error
+      });
       throw error;
     }
   }

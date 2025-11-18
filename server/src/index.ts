@@ -6,7 +6,9 @@ import { containerManager } from './docker/ContainerManager';
 import { startSessionCleanup } from './docker/session-cleanup';
 import { logger } from './utils/logger';
 
-const HOST = '127.0.0.1'; // IPv4 only! IPv6 is disabled on Mac Studio
+// Always listen on 0.0.0.0 to allow Docker bridge containers to connect
+// This is required for dev→prod bridge (studio.noreika.lt → dev servers)
+const HOST = '0.0.0.0';
 
 /**
  * Initialize Docker container manager
@@ -78,4 +80,3 @@ if (require.main === module) {
 
 // Export app for testing
 export { createApp };
-export const app = createApp();

@@ -7,12 +7,12 @@
  * based on per-session port configuration
  */
 
-import { Request, Response } from 'express';
 import { createProxyMiddleware, Options } from 'http-proxy-middleware';
 import { IncomingMessage, ServerResponse } from 'http';
 import { portConfigManager } from './PortConfigManager';
 import { validateProxyTargetWithPort } from '../security/ssrf-validator';
 import { createHtmlInjectionMiddleware } from './html-injection-middleware';
+import { logger } from '../utils/logger';
 
 /**
  * Create dynamic proxy middleware that routes based on sessionId
@@ -26,7 +26,7 @@ export function createDynamicProxyMiddleware() {
       const url = req.url || '';
       const match = url.match(/^\/preview\/([^/]+)/);
       if (!match) {
-        console.warn('[Proxy] Invalid preview URL (no sessionId)');
+        logger.warn('Invalid preview URL - no sessionId found', { url });
         return 'http://127.0.0.1:3000'; // Fallback (will 404)
       }
 
@@ -34,28 +34,32 @@ export function createDynamicProxyMiddleware() {
       const port = portConfigManager.getPortForSession(sessionId);
 
       if (port === null) {
-        console.warn(`[Proxy] No port configured for session ${sessionId}`);
+        logger.warn('No port configured for session', { sessionId });
         return 'http://127.0.0.1:3000'; // Fallback (will 404)
       }
 
       // SSRF validation (double-check)
       const validation = validateProxyTargetWithPort('127.0.0.1', port);
       if (!validation.allowed) {
-        console.error(`[Proxy] SSRF validation failed: ${validation.reason}`);
+        logger.error('SSRF validation failed for proxy target', {
+          reason: validation.reason,
+          sessionId,
+          port
+        });
         return 'http://127.0.0.1:3000'; // Fallback (will 404)
       }
 
       const target = `http://127.0.0.1:${port}`;
-      console.log(`[Proxy] Routing ${sessionId} → ${target}`);
+      logger.debug('Routing proxy request', { sessionId, target });
       return target;
     },
 
     // Path rewrite: Remove /preview/:sessionId prefix
-    pathRewrite: (path, req) => {
+    pathRewrite: (path, _req) => {
       const match = path.match(/^\/preview\/[^/]+(\/.*)?$/);
       if (match) {
         const rewritten = match[1] || '/';
-        console.log(`[Proxy] Path rewrite: ${path} → ${rewritten}`);
+        logger.debug('Proxy path rewrite', { original: path, rewritten });
         return rewritten;
       }
       return path;
@@ -79,13 +83,13 @@ export function createDynamicProxyMiddleware() {
   return (req: IncomingMessage, res: ServerResponse, next?: () => void) => {
     // Set up error handler on the response stream
     res.on('error', (err: Error) => {
-      console.error('[Proxy] Response error:', err.message);
+      logger.error('Proxy response error', { error: err.message });
     });
 
     try {
       proxy(req, res, next);
     } catch (err) {
-      console.error('[Proxy] Middleware error:', err);
+      logger.error('Proxy middleware error', { error: err });
       if (!res.headersSent) {
         res.writeHead(502, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({

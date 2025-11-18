@@ -61,6 +61,8 @@ export interface UseWebSocketReturn {
   sessionId: string | null;
   /** Derived state: true if connectionStatus === 'connected' */
   isConnected: boolean;
+  /** Authentication error message (null if no auth error) */
+  authError: string | null;
 }
 
 /**
@@ -82,6 +84,7 @@ export function useWebSocket(url?: string): UseWebSocketReturn {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionState>('disconnected');
   const [lastMessage, setLastMessage] = useState<ServerMessage | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   // Use ref to maintain stable WebSocket instance across renders
   // This prevents re-creating the WebSocket on every render
@@ -89,7 +92,8 @@ export function useWebSocket(url?: string): UseWebSocketReturn {
 
   // Initialize WebSocket connection
   useEffect(() => {
-    // Create WebSocket client instance
+    // Create WebSocket client instance with authentication token
+    // Token is read from VITE_WS_AUTH_TOKEN environment variable
     const ws = new WebSocketClient(url);
     wsRef.current = ws;
 
@@ -104,6 +108,7 @@ export function useWebSocket(url?: string): UseWebSocketReturn {
     // Connection established with session ID
     ws.on('connected', (id) => {
       setSessionId(id);
+      setAuthError(null); // Clear any previous auth errors
     });
 
     // Message received from server
@@ -111,9 +116,16 @@ export function useWebSocket(url?: string): UseWebSocketReturn {
       setLastMessage(message);
     });
 
+    // Authentication error occurred
+    ws.on('authError', (error) => {
+      console.error('[useWebSocket] Authentication error:', error.message);
+      setAuthError(error.message);
+      setConnectionStatus('error');
+    });
+
     // Error occurred
     ws.on('error', (error) => {
-      console.error('WebSocket error in hook:', error);
+      console.error('[useWebSocket] WebSocket error:', error);
     });
 
     // Connect to the server
@@ -121,6 +133,8 @@ export function useWebSocket(url?: string): UseWebSocketReturn {
 
     // Cleanup function: disconnect when component unmounts
     // This is critical for React 19 Strict Mode and prevents memory leaks
+    // The shouldReconnect flag in WebSocketClient prevents reconnection attempts
+    // during intentional cleanup, avoiding noise in development
     return () => {
       ws.disconnect();
       wsRef.current = null;
@@ -166,5 +180,6 @@ export function useWebSocket(url?: string): UseWebSocketReturn {
     lastMessage,
     sessionId,
     isConnected,
+    authError,
   };
 }

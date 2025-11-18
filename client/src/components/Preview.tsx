@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { MCPStatus } from './MCPStatus';
 import './Preview.css';
 
 interface PreviewProps {
@@ -11,10 +12,27 @@ export function Preview({ url, reloadTrigger, onConfigure }: PreviewProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
   const [key, setKey] = useState(0);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const handleLoad = () => {
     setIsLoading(false);
     setHasError(false);
+
+    // SECURITY FIX (HIGH-003): Send auth token to iframe via postMessage
+    // This prevents token exposure in URL parameters
+    if (iframeRef.current?.contentWindow) {
+      const token = import.meta.env.VITE_WS_AUTH_TOKEN;
+      if (token) {
+        // Send token to iframe's console interceptor
+        iframeRef.current.contentWindow.postMessage(
+          {
+            type: 'console-interceptor-token',
+            token: token
+          },
+          '*' // In production, should be specific origin
+        );
+      }
+    }
   };
 
   const handleError = () => {
@@ -36,10 +54,34 @@ export function Preview({ url, reloadTrigger, onConfigure }: PreviewProps) {
     }
   }, [reloadTrigger, url]);
 
+  // SECURITY FIX (HIGH-003): Listen for token requests from iframe
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      // Handle token request from console interceptor
+      if (event.data?.type === 'console-interceptor-ready' ||
+          event.data?.type === 'console-interceptor-token-request') {
+        const token = import.meta.env.VITE_WS_AUTH_TOKEN;
+        if (token && iframeRef.current?.contentWindow) {
+          iframeRef.current.contentWindow.postMessage(
+            {
+              type: 'console-interceptor-token',
+              token: token
+            },
+            '*' // In production, should validate origin
+          );
+        }
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
+
   return (
     <div className="preview-container">
       <div className="preview-header">
         <span className="preview-title">Preview</span>
+        <MCPStatus className="preview-mcp-status" />
         <button
           onClick={handleRefresh}
           className="preview-refresh-btn"
@@ -79,6 +121,7 @@ export function Preview({ url, reloadTrigger, onConfigure }: PreviewProps) {
               </div>
             )}
             <iframe
+              ref={iframeRef}
               key={key}
               src={url}
               className="preview-iframe"

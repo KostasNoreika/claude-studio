@@ -9,6 +9,7 @@
  */
 
 import { containerManager } from './ContainerManager';
+import { logger } from '../utils/logger';
 
 // Session timeout: 30 minutes of inactivity
 const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
@@ -49,7 +50,7 @@ export function startHeartbeat(
     try {
       sendPing();
     } catch (error) {
-      console.error(`Failed to send heartbeat for session ${sessionId}:`, error);
+      logger.error('Failed to send heartbeat', { sessionId, error });
       stopHeartbeat(sessionId);
     }
   }, 30 * 1000);
@@ -105,9 +106,8 @@ export async function cleanupExpiredSessions(): Promise<number> {
     const timeSinceActivity = Date.now() - lastActivity;
 
     if (timeSinceActivity > SESSION_TIMEOUT_MS) {
-      console.log(
-        `Cleaning up expired session ${sessionId} (idle for ${Math.round(timeSinceActivity / 1000 / 60)}m)`
-      );
+      const idleMinutes = Math.round(timeSinceActivity / 1000 / 60);
+      logger.info('Cleaning up expired session', { sessionId, idleMinutes });
 
       try {
         // Stop heartbeat
@@ -123,7 +123,7 @@ export async function cleanupExpiredSessions(): Promise<number> {
         // Remove from tracking
         sessionActivity.delete(sessionId);
       } catch (error) {
-        console.error(`Failed to cleanup session ${sessionId}:`, error);
+        logger.error('Failed to cleanup session', { sessionId, error });
       }
     }
   }
@@ -136,22 +136,25 @@ export async function cleanupExpiredSessions(): Promise<number> {
  * Should be called once on server startup
  */
 export function startSessionCleanup(): NodeJS.Timeout {
-  console.log('Starting session cleanup (30min timeout, 5min check interval)');
+  logger.info('Starting session cleanup', {
+    timeout: '30min',
+    checkInterval: '5min'
+  });
 
   const interval = setInterval(async () => {
     try {
       const cleaned = await cleanupExpiredSessions();
       if (cleaned > 0) {
-        console.log(`Session cleanup: removed ${cleaned} expired sessions`);
+        logger.info('Session cleanup completed', { removedSessions: cleaned });
       }
     } catch (error) {
-      console.error('Session cleanup error:', error);
+      logger.error('Session cleanup error', { error });
     }
   }, CLEANUP_INTERVAL_MS);
 
   // Run initial cleanup on startup
   cleanupExpiredSessions().catch(error => {
-    console.error('Initial session cleanup failed:', error);
+    logger.error('Initial session cleanup failed', { error });
   });
 
   return interval;
@@ -163,7 +166,7 @@ export function startSessionCleanup(): NodeJS.Timeout {
  */
 export function stopSessionCleanup(interval: NodeJS.Timeout): void {
   clearInterval(interval);
-  console.log('Session cleanup stopped');
+  logger.info('Session cleanup stopped');
 }
 
 /**

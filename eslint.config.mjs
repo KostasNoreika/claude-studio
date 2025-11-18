@@ -54,6 +54,13 @@ export default [
       'react/react-in-jsx-scope': 'off',
       'react/prop-types': 'off',
       'no-undef': 'off', // TypeScript handles this
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'ExportDefaultDeclaration',
+          message: 'Prefer named exports for better IDE support and refactoring',
+        },
+      ],
     },
     settings: {
       react: {

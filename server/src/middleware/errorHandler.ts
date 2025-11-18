@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { ContainerError } from '../docker/errors';
+import { logger } from '../utils/logger';
 
 /**
  * 404 Not Found handler
@@ -28,7 +29,7 @@ export function errorHandler(
   res: Response,
   _next: NextFunction
 ): void {
-  console.error('Error:', err);
+  logger.error('Request error', { error: err });
 
   // Handle ContainerError with user-friendly messages
   if (err instanceof ContainerError) {
@@ -68,46 +69,4 @@ export function errorHandler(
       : 'An unexpected error occurred. Please try again.',
     ...(isDevelopment && { stack: err.stack }),
   });
-}
-
-/**
- * Async error wrapper to catch errors in async route handlers
- * Usage: router.get('/path', asyncHandler(async (req, res) => { ... }))
- */
-export function asyncHandler(
-  fn: (req: Request, res: Response, next: NextFunction) => Promise<void>
-) {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    Promise.resolve(fn(req, res, next)).catch(next);
-  };
-}
-
-/**
- * WebSocket error formatter
- * Converts errors to user-friendly WebSocket messages
- */
-export function formatWebSocketError(err: Error): {
-  type: 'error';
-  error: string;
-  message: string;
-  retryable?: boolean;
-} {
-  if (err instanceof ContainerError) {
-    return {
-      type: 'error',
-      error: err.name,
-      message: err.toUserMessage(),
-      retryable: err.retryable,
-    };
-  }
-
-  const isDevelopment = process.env.NODE_ENV !== 'production';
-
-  return {
-    type: 'error',
-    error: 'Error',
-    message: isDevelopment
-      ? err.message
-      : 'An unexpected error occurred. Please reconnect.',
-  };
 }

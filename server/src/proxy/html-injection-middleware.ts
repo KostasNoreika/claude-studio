@@ -4,11 +4,24 @@
  *
  * This middleware wraps the proxy response to:
  * 1. Detect HTML content-type
- * 2. Buffer the response body
+ * 2. Buffer the response body (with size limit for DoS protection)
  * 3. Inject console interceptor script
  * 4. Handle CSP headers
  *
+ * PERFORMANCE FIX (CRITICAL-002): Added size limits to prevent memory exhaustion
+ * - Max buffer size: 5MB (configurable)
+ * - Responses larger than limit are passed through without injection
+ *
+ * KNOWN LIMITATIONS:
+ * - Cannot handle gzip/brotli responses (would need decompression)
+ * - Cannot inject if script-src 'none' CSP is in place
+ * - Large HTML files (>5MB) skip injection
+ * - Cannot capture errors that happen before script loads
+ *
  * SECURITY: Only injects into HTML, preserves all other content types
+ *
+ * See: docs/CONSOLE_STREAMING_LIMITATIONS.md for detailed analysis
+ * Troubleshooting: docs/TROUBLESHOOTING.md#console-streaming-issues
  */
 
 import { IncomingMessage, ServerResponse } from 'http';
@@ -19,6 +32,19 @@ import {
   generateNonce,
   modifyCSPHeader,
 } from '../console/script-injector';
+import { logger } from '../utils/logger';
+
+/**
+ * PERFORMANCE FIX (CRITICAL-002): Size limit for buffering
+ * Responses larger than this will be passed through without injection
+ */
+const MAX_BUFFER_SIZE = 5 * 1024 * 1024; // 5MB
+
+/**
+ * Type definitions for response method overrides
+ */
+type WriteFunction = ServerResponse['write'];
+type EndFunction = ServerResponse['end'];
 
 /**
  * Create a response interceptor for HTML injection
@@ -36,34 +62,132 @@ export function createHtmlInjectionMiddleware() {
       return; // Pass through non-HTML content unchanged
     }
 
-    console.log('[HTML Injection] Intercepting HTML response for', req.url);
+    logger.debug('Intercepting HTML response for console injection', { url: req.url });
 
     // Generate nonce for CSP
     const nonce = generateNonce();
 
     // Buffer to collect response chunks
+    // PERFORMANCE FIX (CRITICAL-002): Track total size to prevent memory exhaustion
     const chunks: Buffer[] = [];
+    let totalSize = 0;
+    let sizeLimitExceeded = false;
 
     // Override response methods to capture data
-    const originalWrite = res.write.bind(res);
-    const originalEnd = res.end.bind(res);
+    const originalWrite: WriteFunction = res.write.bind(res);
+    const originalEnd: EndFunction = res.end.bind(res);
     let isModified = false;
 
-    res.write = function(chunk: any, ...args: any[]): boolean {
-      if (!isModified) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-        return true;
+    res.write = function(
+      chunk: string | Buffer,
+      encodingOrCallback?: BufferEncoding | ((error: Error | null | undefined) => void),
+      callback?: (error: Error | null | undefined) => void
+    ): boolean {
+      if (sizeLimitExceeded || isModified) {
+        // Pass through if size limit exceeded or already modified
+        if (typeof encodingOrCallback === 'function') {
+          return (originalWrite as typeof originalWrite)(chunk, encodingOrCallback);
+        }
+        return (originalWrite as typeof originalWrite)(chunk, encodingOrCallback, callback);
       }
-      return originalWrite(chunk, ...args);
+
+      // Track buffer size
+      const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalSize += bufferChunk.length;
+
+      // PERFORMANCE FIX: Check size limit
+      if (totalSize > MAX_BUFFER_SIZE) {
+        sizeLimitExceeded = true;
+        isModified = true; // Skip injection
+
+        logger.warn('HTML response too large for injection, passing through', {
+          url: req.url,
+          size: totalSize,
+          limit: MAX_BUFFER_SIZE,
+        });
+
+        // Flush all buffered chunks + this chunk
+        for (const bufferedChunk of chunks) {
+          originalWrite.call(res, bufferedChunk);
+        }
+        chunks.length = 0; // Clear buffer
+
+        // Write current chunk
+        if (typeof encodingOrCallback === 'function') {
+          return (originalWrite as typeof originalWrite)(chunk, encodingOrCallback);
+        }
+        return (originalWrite as typeof originalWrite)(chunk, encodingOrCallback, callback);
+      }
+
+      chunks.push(bufferChunk);
+      return true;
     };
 
-    res.end = function(chunk?: any, ...args: any[]): ServerResponse {
+    res.end = function(
+      chunkOrCallback?: string | Buffer | (() => void),
+      encodingOrCallback?: BufferEncoding | (() => void),
+      callback?: () => void
+    ): ServerResponse {
+      // Handle different overload signatures
+      let chunk: string | Buffer | undefined;
+      let encoding: BufferEncoding | undefined;
+      let cb: (() => void) | undefined;
+
+      if (typeof chunkOrCallback === 'function') {
+        cb = chunkOrCallback;
+      } else {
+        chunk = chunkOrCallback;
+        if (typeof encodingOrCallback === 'function') {
+          cb = encodingOrCallback;
+        } else {
+          encoding = encodingOrCallback;
+          cb = callback;
+        }
+      }
+
+      // PERFORMANCE FIX: Handle size limit exceeded case
+      if (sizeLimitExceeded) {
+        // Pass through directly
+        if (encoding) {
+          return (originalEnd as typeof originalEnd).call(res, chunk, encoding, cb);
+        }
+        return (originalEnd as typeof originalEnd).call(res, chunk, cb);
+      }
+
       if (chunk) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        totalSize += bufferChunk.length;
+
+        // Check size limit on final chunk
+        if (totalSize > MAX_BUFFER_SIZE) {
+          sizeLimitExceeded = true;
+          isModified = true;
+
+          logger.warn('HTML response too large for injection (end), passing through', {
+            url: req.url,
+            size: totalSize,
+            limit: MAX_BUFFER_SIZE,
+          });
+
+          // Flush all buffered chunks + final chunk
+          for (const bufferedChunk of chunks) {
+            originalWrite.call(res, bufferedChunk);
+          }
+
+          if (encoding) {
+            return (originalEnd as typeof originalEnd).call(res, chunk, encoding, cb);
+          }
+          return (originalEnd as typeof originalEnd).call(res, chunk, cb);
+        }
+
+        chunks.push(bufferChunk);
       }
 
       if (isModified) {
-        return originalEnd(chunk, ...args);
+        if (encoding) {
+          return (originalEnd as typeof originalEnd).call(res, chunk, encoding, cb);
+        }
+        return (originalEnd as typeof originalEnd).call(res, chunk, cb);
       }
 
       // Combine all chunks into HTML string
@@ -71,9 +195,9 @@ export function createHtmlInjectionMiddleware() {
 
       // Check if injection is needed
       if (!needsInjection(html)) {
-        console.log('[HTML Injection] Script already present, skipping');
+        logger.debug('Console script already present, skipping injection', { url: req.url });
         isModified = true;
-        return originalEnd(html, ...args);
+        return (originalEnd as typeof originalEnd).call(res, html, encoding, cb);
       }
 
       // Inject console script
@@ -93,10 +217,10 @@ export function createHtmlInjectionMiddleware() {
         res.setHeader('Content-Security-Policy', modifiedCSP);
       }
 
-      console.log('[HTML Injection] Injected console interceptor script');
+      logger.debug('Injected console interceptor script', { url: req.url });
 
       isModified = true;
-      return originalEnd(modifiedBuffer, ...args);
+      return (originalEnd as typeof originalEnd).call(res, modifiedBuffer, encoding, cb);
     };
   };
 }

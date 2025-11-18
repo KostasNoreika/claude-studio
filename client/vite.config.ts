@@ -5,9 +5,35 @@ import path from 'path';
 export default defineConfig({
   plugins: [react()],
   server: {
-    host: '127.0.0.1', // IPv4 only!
-    port: 3001,
+    host: '0.0.0.0', // Allow Docker containers to connect via host.docker.internal
+    port: 3010, // Port for Docker bridge routing
     strictPort: true,
+    cors: true,
+    // Allow connections from production domain (via Traefik reverse proxy)
+    allowedHosts: ['studio.noreika.lt', 'localhost', '127.0.0.1'],
+    // HMR: use production config only in production, auto for dev
+    hmr: process.env.NODE_ENV === 'production' ? {
+      host: 'studio.noreika.lt',
+      port: 80,
+    } : true,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+    },
+    proxy: {
+      '/ws': {
+        target: 'ws://127.0.0.1:3850',
+        ws: true,
+        changeOrigin: true,
+      },
+      '/api': {
+        target: 'http://127.0.0.1:3850',
+        changeOrigin: true,
+      },
+      '/preview': {
+        target: 'http://127.0.0.1:3850',
+        changeOrigin: true,
+      },
+    },
   },
   resolve: {
     alias: {

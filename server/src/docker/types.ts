@@ -4,6 +4,8 @@
  * P03-T009: Container lifecycle error handling
  */
 
+import type { IFileWatcher } from '../watcher/types';
+
 /**
  * Error codes for container operations
  */
@@ -106,7 +108,7 @@ export interface ContainerSession {
    * File watcher instance for this session (P07-T003)
    * Internal use only - not serialized
    */
-  fileWatcher?: any; // Import type causes circular dependency
+  fileWatcher?: IFileWatcher;
 }
 
 /**
@@ -122,9 +124,22 @@ export const CONTAINER_SECURITY_DEFAULTS = {
 
   /**
    * Drop all capabilities, add only required ones
+   * SECURITY FIX CRITICAL-008: Removed DAC_OVERRIDE capability
+   *
+   * DAC_OVERRIDE allows bypassing file permission checks (Discretionary Access Control)
+   * This capability is NOT needed because:
+   * 1. Container runs as non-root user (1000:1000)
+   * 2. All mounted volumes have correct ownership matching the container user
+   * 3. Tmpfs mounts are explicitly configured with uid=1000,gid=1000
+   * 4. CHOWN capability is sufficient for changing file ownership when needed
+   *
+   * Removing DAC_OVERRIDE prevents:
+   * - Unauthorized access to files owned by other users
+   * - Privilege escalation through file permission bypass
+   * - Potential container breakout vectors
    */
   CapDrop: ['ALL'],
-  CapAdd: ['CHOWN', 'DAC_OVERRIDE'], // Minimal capabilities for file operations
+  CapAdd: ['CHOWN'], // Only CHOWN for file ownership operations
 
   /**
    * Run as non-root user

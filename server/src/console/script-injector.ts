@@ -5,11 +5,19 @@
  * Injects the console interceptor script into HTML responses via proxy middleware.
  * Handles CSP (Content Security Policy) challenges with nonce-based approach.
  *
+ * KNOWN LIMITATIONS:
+ * - Cannot inject into responses with script-src 'none' CSP
+ * - Cannot intercept XHR/fetch before script loads (see BUG-002)
+ * - Gzip/brotli compressed responses need decompression first
+ * - Hash-based CSP breaks if script content changes
+ *
  * SECURITY CRITICAL:
  * - Only injects into HTML content-type
  * - Adds CSP nonce for strict CSP policies
  * - Does not modify binary or non-HTML responses
  * - Validates response before injection
+ *
+ * See: docs/CONSOLE_STREAMING_LIMITATIONS.md for detailed technical analysis
  */
 
 import { readFileSync } from 'fs';

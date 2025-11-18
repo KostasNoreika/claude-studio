@@ -50,22 +50,23 @@ Claude Studio is a web-based IDE that combines:
 │                   Node.js Backend Server                │
 ├─────────────────────────────────────────────────────────┤
 │  • WebSocket Manager (bidirectional)                    │
-│  • Terminal Bridge (node-pty → Claude CLI)              │
+│  • Container Manager (Docker session orchestration)     │
 │  • File Watcher (chokidar)                              │
 │  • Dev Server Proxy (http-proxy-middleware)             │
 │  • Console Stream Interceptor                           │
-│  • Session Manager (tmux persistence)                   │
+│  • Session Manager (container lifecycle)                │
 └─────────────────────────────────────────────────────────┘
               ↕                          ↕
-        node-pty                   File System
+      Docker Streams                File System
               ↕                          ↕
 ┌─────────────────────────────────────────────────────────┐
-│              tmux Session (persistent)                  │
+│           Docker Container (isolated session)           │
+│  Security: Read-only rootfs, non-root user, cgroups     │
 │  ┌───────────────────────────────────────────────────┐ │
-│  │  Claude CLI Process                               │ │
+│  │  Interactive Bash Shell                           │ │
 │  │  $ claude "add a login form"                      │ │
 │  │                                                   │ │
-│  │  Reads: project files                            │ │
+│  │  Reads: project files (bind-mounted)             │ │
 │  │  Writes: Button.tsx, App.tsx, ...                │ │
 │  │  Executes: npm install, git commit, etc.         │ │
 │  └───────────────────────────────────────────────────┘ │
@@ -74,6 +75,7 @@ Claude Studio is a web-based IDE that combines:
 ┌─────────────────────────────────────────────────────────┐
 │                   Your Project Files                    │
 │   src/App.tsx, package.json, etc.                      │
+│   (bind-mounted into container at /workspace)          │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -321,6 +323,88 @@ claude-studio/
 - [ ] File watcher + hot reload
 - [ ] tmux session persistence
 - [ ] Dev server auto-detection
+
+## 🔍 Chrome DevTools MCP Integration
+
+Claude Studio supports **on-demand advanced debugging** via Chrome DevTools MCP server for performance analysis, network inspection, and screenshots.
+
+### Real-Time Console + On-Demand Analysis
+
+The system uses a **hybrid approach**:
+
+- **Real-time Console Streaming**: Browser logs/errors instantly via WebSocket (active)
+- **On-Demand MCP Tools**: Performance, network, DOM analysis when needed (requested)
+
+```bash
+# Simply ask Claude to analyze performance
+$ claude "the page is loading slowly, can you profile it?"
+
+Claude will:
+1. Capture performance timeline via MCP
+2. Identify slow network requests
+3. Analyze expensive DOM operations
+4. Propose optimizations
+```
+
+### Available MCP Tools
+
+| Tool | Purpose |
+|------|---------|
+| Performance Metrics | FCP, LCP, CLS, TTFB measurements |
+| Network Waterfall | Request timeline and resource sizes |
+| Screenshots | Capture page state for visual analysis |
+| DOM Inspection | Query and analyze DOM structure |
+| JavaScript Evaluation | Execute code and inspect results |
+
+### Quick Setup
+
+```bash
+# 1. Install MCP server
+npm install -g chrome-devtools-mcp
+
+# 2. Configure Claude Desktop (macOS)
+cat > ~/Library/Application\ Support/Claude/claude_desktop_config.json << 'EOF'
+{
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "cdp-mcp",
+      "args": ["--port", "9223"]
+    }
+  }
+}
+EOF
+
+# 3. Launch Chrome with debugging
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+  --remote-debugging-port=9223 \
+  --user-data-dir=/tmp/chrome-debug &
+
+# 4. Restart Claude Desktop and start debugging
+```
+
+See **[Chrome DevTools MCP Setup Guide](docs/CHROME_DEVTOOLS_MCP_SETUP.md)** for detailed instructions and **[Usage Guide](docs/CHROME_DEVTOOLS_MCP_USAGE.md)** for workflow examples.
+
+## ⚠️ Known Limitations
+
+Claude Studio's console streaming uses **script injection** to intercept browser console output. This approach has trade-offs:
+
+### What Works Well
+- Real-time console.log/warn/error messages
+- Console message history and filtering
+- Error stack traces
+- JSON object serialization
+- On-demand performance, network, and DOM analysis via MCP
+
+### Known Limitations
+
+1. **Strict Content Security Policy (CSP)** - Pages with `script-src 'none'` will block injection
+2. **Early network requests** - Requests before MCP connects won't be captured in network waterfall
+3. **Large page screenshots** - Full-page screenshots of 10K+ pixel height may be slow
+4. **Early errors** - Errors during HTML parsing before MCP connection are missed
+5. **Compressed responses** - Some gzip/brotli responses may not be decompressed properly
+6. **WebSocket overhead** - Each page creates a new WebSocket connection
+
+See [Console Streaming Limitations](docs/CONSOLE_STREAMING_LIMITATIONS.md) for detailed technical analysis and [Troubleshooting](docs/TROUBLESHOOTING.md) for solutions.
 
 ## 🚧 Future Features (Phase 2+)
 

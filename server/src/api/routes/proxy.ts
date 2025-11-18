@@ -10,6 +10,8 @@ import { Router, Request, Response } from 'express';
 import type { IRouter } from 'express';
 import { portConfigManager } from '../../proxy/PortConfigManager';
 import { validateProxyTargetWithPort } from '../../security/ssrf-validator';
+import { errorResponse } from '../../utils/response';
+import { logger } from '../../utils/logger';
 
 const router: IRouter = Router();
 
@@ -45,7 +47,11 @@ router.post('/configure', async (req: Request, res: Response) => {
     // SSRF validation (CRITICAL)
     const validation = validateProxyTargetWithPort('127.0.0.1', port);
     if (!validation.allowed) {
-      console.warn(`[Proxy] SSRF attempt blocked: ${validation.reason}`);
+      logger.warn('SSRF attempt blocked', {
+        sessionId,
+        port,
+        reason: validation.reason
+      });
       res.status(403).json({
         success: false,
         error: validation.reason,
@@ -66,13 +72,9 @@ router.post('/configure', async (req: Request, res: Response) => {
       proxyUrl,
     });
 
-    console.log(`[Proxy] Configured session ${sessionId} → port ${port}`);
+    logger.info('Proxy port configured', { sessionId, port });
   } catch (error) {
-    console.error('[Proxy] Configuration error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error',
-    });
+    errorResponse(res, 'Internal server error', { context: { error } });
   }
 });
 
@@ -126,4 +128,4 @@ router.delete('/configure/:sessionId', (req: Request, res: Response) => {
   });
 });
 
-export default router;
+export const proxyRouter = router;

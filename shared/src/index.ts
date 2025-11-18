@@ -7,33 +7,8 @@
  * @packageDocumentation
  */
 
-// Export all WebSocket message types
+// Export all WebSocket message types and utilities
 export * from './types';
 
-// Re-export specific types for convenience
-export type {
-  // Client Messages
-  TerminalInputMessage,
-  HeartbeatMessage,
-  ClientMessage,
-
-  // Server Messages
-  TerminalOutputMessage,
-  ConnectedMessage,
-  ErrorMessage,
-  ServerMessage,
-} from './types';
-
-// Re-export utility functions
-export {
-  // Type Guards
-  isClientMessage,
-  isServerMessage,
-
-  // Message Factories
-  createTerminalInputMessage,
-  createHeartbeatMessage,
-  createTerminalOutputMessage,
-  createConnectedMessage,
-  createErrorMessage,
-} from './types';
+// Export utility functions
+export * from './utils/id-generator';

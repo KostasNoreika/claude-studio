@@ -68,6 +68,29 @@ export interface SessionReconnectMessage {
 }
 
 /**
+ * Message to create a new session with specified workspace
+ *
+ * Sent by client when switching projects or starting work on a specific project.
+ *
+ * @example
+ * {
+ *   type: 'session:create',
+ *   workspacePath: '/opt/dev/KAGI-AI',
+ *   projectName: 'KAGI-AI',
+ *   timestamp: '2025-11-04T12:00:00.000Z'
+ * }
+ */
+export interface SessionCreateMessage {
+  type: 'session:create';
+  /** Workspace path to work in */
+  workspacePath: string;
+  /** Optional project name */
+  projectName?: string;
+  /** ISO8601 timestamp when the session create was requested */
+  timestamp: string;
+}
+
+/**
  * All messages that can be sent from client to server
  *
  * This discriminated union ensures type safety when handling
@@ -76,7 +99,8 @@ export interface SessionReconnectMessage {
 export type ClientMessage =
   | TerminalInputMessage
   | HeartbeatMessage
-  | SessionReconnectMessage;
+  | SessionReconnectMessage
+  | SessionCreateMessage;
 
 // ============================================================================
 // SERVER MESSAGES (Server → Client)
@@ -280,7 +304,7 @@ export function isClientMessage(message: unknown): message is ClientMessage {
   }
 
   const msg = message as { type?: string };
-  return msg.type === 'terminal:input' || msg.type === 'heartbeat' || msg.type === 'session:reconnect';
+  return msg.type === 'terminal:input' || msg.type === 'heartbeat' || msg.type === 'session:reconnect' || msg.type === 'session:create';
 }
 
 /**
@@ -399,6 +423,18 @@ export function createSessionReconnectMessage(sessionId: string): SessionReconne
 }
 
 /**
+ * Helper function to create a properly typed SessionCreateMessage
+ */
+export function createSessionCreateMessage(workspacePath: string, projectName?: string): SessionCreateMessage {
+  return {
+    type: 'session:create',
+    workspacePath,
+    projectName,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+/**
  * Helper function to create a properly typed PreviewUrlMessage
  * P06-T005: Preview URL notification
  */
@@ -430,4 +466,50 @@ export function createPreviewReloadMessage(
     changedFiles,
     timestamp: new Date().toISOString(),
   };
+}
+
+// ============================================================================
+// MCP INTEGRATION TYPES
+// ============================================================================
+
+/**
+ * MCP Status Response
+ *
+ * Returned by GET /api/mcp/status endpoint
+ * Provides information about Chrome DevTools MCP integration availability
+ *
+ * The backend detects:
+ * - MCP_ENABLED configuration setting
+ * - Chrome debug port (default 9223)
+ * - Whether Chrome is currently running and accessible
+ *
+ * @example
+ * {
+ *   "enabled": true,
+ *   "chromeDebugPort": 9223,
+ *   "chromeAvailable": true
+ * }
+ */
+export interface MCPStatusResponse {
+  /** Whether MCP integration is enabled in configuration */
+  enabled: boolean;
+  /** Port where Chrome DevTools Protocol is expected */
+  chromeDebugPort: number;
+  /** Whether Chrome is currently running and accessible via CDP */
+  chromeAvailable: boolean;
+}
+
+/**
+ * MCP Configuration Response
+ *
+ * Returned by GET /api/mcp/config endpoint
+ * Provides MCP configuration information with human-readable description
+ */
+export interface MCPConfigResponse {
+  /** Whether MCP integration is enabled */
+  enabled: boolean;
+  /** Chrome debug port */
+  chromeDebugPort: number;
+  /** Human-readable description of MCP status */
+  description: string;
 }
