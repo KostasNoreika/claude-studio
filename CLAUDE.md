@@ -17,12 +17,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Common Development Commands
 
 ### Setup and Installation
+
 ```bash
 # Install all dependencies (root and workspaces)
 pnpm install
 ```
 
 ### Development
+
 ```bash
 # Run both client and server in development mode (use two terminals)
 pnpm --filter server dev    # Terminal 1: Backend on ws://127.0.0.1:3850
@@ -34,6 +36,7 @@ pnpm dev:client
 ```
 
 ### Building
+
 ```bash
 # Build everything
 pnpm build
@@ -44,6 +47,7 @@ pnpm build:client
 ```
 
 ### Testing
+
 ```bash
 # Run all tests (unit + integration)
 pnpm test
@@ -68,6 +72,7 @@ pnpm test:e2e:debug     # With debugger
 ```
 
 ### Linting and Formatting
+
 ```bash
 pnpm lint               # Check for linting errors
 pnpm lint:fix          # Auto-fix linting errors
@@ -76,6 +81,7 @@ pnpm format:check      # Check formatting without changes
 ```
 
 ### Type Checking
+
 ```bash
 # Type check without building
 pnpm --filter server type-check
@@ -83,6 +89,7 @@ pnpm --filter client type-check
 ```
 
 ### Running Tests for a Single File
+
 ```bash
 # Server (Jest)
 cd server && pnpm test <test-file-pattern>
@@ -105,12 +112,14 @@ The system uses a bidirectional WebSocket protocol for all real-time communicati
 2. **Server → Client Messages**: Terminal output, reload triggers, server status, container events
 
 Key message types:
+
 - `terminal:input` / `terminal:output` - Terminal I/O
 - `console` - Browser console logs streamed to backend
 - `reload` - Trigger preview iframe reload after file changes
 - `container:*` - Docker container lifecycle events
 
 Implementation files:
+
 - Server: `server/src/websocket/handler.ts`
 - Client: `client/src/hooks/useWebSocket.ts`
 
@@ -119,18 +128,21 @@ Implementation files:
 **Critical Security Decision**: Uses Docker containers instead of tmux for terminal isolation.
 
 Why Docker over tmux:
+
 - **Security**: Process isolation, resource limits, read-only filesystem
 - **Resource Control**: CPU/memory limits via cgroups
 - **No Host Access**: Cannot escape to host system
 - **Reproducible**: Consistent environment regardless of host
 
 Key components:
+
 - `server/src/docker/ContainerManager.ts` - Container lifecycle management
 - `server/src/docker/session-cleanup.ts` - Automatic cleanup of inactive sessions
 - `server/src/docker/circuitBreaker.ts` - Fault tolerance for Docker daemon
 - `server/src/docker/retry.ts` - Retry logic with exponential backoff
 
 Container configuration:
+
 - Read-only root filesystem (`ReadonlyRootfs: true`)
 - Only `/workspace` is writable (bind-mounted project directory)
 - Non-root user (`User: '1000:1000'`)
@@ -140,6 +152,7 @@ Container configuration:
 ### File Watching and Hot Reload
 
 The system uses chokidar for file watching:
+
 - Monitors project files for changes
 - Triggers WebSocket `reload` message to all connected clients
 - Debounced to avoid reload spam
@@ -148,11 +161,13 @@ The system uses chokidar for file watching:
 ### Proxy and Console Injection
 
 Dev server proxy architecture:
+
 - `server/src/proxy/middleware.ts` - HTTP proxy to user's dev server
 - `server/src/proxy/html-injection-middleware.ts` - Injects console interceptor script into HTML responses
 - `server/src/proxy/PortConfigManager.ts` - Validates and manages port configurations
 
 Security validations:
+
 - Only `127.0.0.1` and `localhost` allowed (SSRF prevention)
 - Port range: 3000-9999
 - Blocked ports: 22 (SSH), 3306 (MySQL), 5432 (Postgres), etc.
@@ -167,6 +182,7 @@ Security validations:
 ## Important Security Considerations
 
 **Read `SECURITY.md` before making changes to:**
+
 - Docker container configuration
 - WebSocket authentication
 - Proxy middleware
@@ -174,6 +190,7 @@ Security validations:
 - Console log rendering
 
 Key security rules:
+
 1. **Never** use `--privileged` mode for Docker containers
 2. **Always** validate proxy target hosts and ports against whitelist
 3. **Always** HTML-escape console log output (XSS prevention)
@@ -183,12 +200,14 @@ Key security rules:
 ## Critical Infrastructure Rules
 
 ### Network Binding
+
 - **ALWAYS** bind to `127.0.0.1` (IPv4 only)
 - **NEVER** use `::1` or IPv6 addresses (IPv6 disabled on host system)
 - Backend server: `ws://127.0.0.1:3850`
 - Frontend dev server: `http://localhost:3001`
 
 ### Port Allocation
+
 - Backend: 3850 (registered in `/opt/registry/projects.json`)
 - Frontend: 3001 (Vite dev server)
 - User dev servers: Auto-detected or configured via PortConfigManager
@@ -196,6 +215,7 @@ Key security rules:
 ## Project Structure Notes
 
 ### Monorepo Workspaces
+
 ```
 /server         - Backend Express + WebSocket + Docker manager
 /client         - Frontend React + xterm.js + Vite
@@ -203,6 +223,7 @@ Key security rules:
 ```
 
 ### Key Backend Modules
+
 ```
 server/src/
   ├── docker/              - Container isolation and management
@@ -220,6 +241,7 @@ server/src/
 ```
 
 ### Key Frontend Modules
+
 ```
 client/src/
   ├── components/          - React components
@@ -236,16 +258,19 @@ client/src/
 ## Testing Strategy
 
 ### Unit Tests
+
 - **Server**: Jest for Docker manager, WebSocket handlers, security validators
 - **Client**: Vitest for React components and hooks
 - Mock Docker API calls to avoid real container creation in tests
 
 ### Integration Tests
+
 - Full WebSocket flow (client ↔ server)
 - Container lifecycle (create, attach, cleanup)
 - Proxy middleware with console injection
 
 ### E2E Tests (Playwright)
+
 - Prerequisites: Both servers must be running
 - Tests terminal input/output, preview reload, console streaming
 - Configuration: `playwright.config.ts`
@@ -256,13 +281,13 @@ client/src/
 ### Adding a New WebSocket Message Type
 
 1. Add type to `shared/src/types.ts`:
+
 ```typescript
-export type ClientMessage =
-  | ExistingTypes
-  | { type: 'new-message'; data: string };
+export type ClientMessage = ExistingTypes | { type: 'new-message'; data: string };
 ```
 
 2. Handle in `server/src/websocket/handler.ts`:
+
 ```typescript
 case 'new-message':
   // Handle message
@@ -288,27 +313,32 @@ case 'new-message':
 ## Environment Configuration
 
 ### Server Environment Variables
+
 - `PORT` - Server port (default: 3850)
 - `NODE_ENV` - Environment (development/production)
 - `LOG_LEVEL` - Logging verbosity
 - See `server/.env.example` for full list
 
 ### Client Environment Variables
+
 - `VITE_WS_URL` - WebSocket server URL (default: ws://127.0.0.1:3850)
 
 ## Build and Deployment
 
 ### Development Build
+
 ```bash
 pnpm build  # Builds both server and client
 ```
 
 ### Production Build
+
 ```bash
 pnpm build:all  # Full production build
 ```
 
 ### Docker Production Deployment
+
 - Configuration: `docker-compose.prod.yml`
 - Dockerfile: `Dockerfile.prod`
 - Deployment target: Coolify with Traefik reverse proxy
@@ -317,21 +347,25 @@ pnpm build:all  # Full production build
 ## Troubleshooting Common Issues
 
 ### Docker Daemon Connection Issues
+
 - Check Docker Desktop is running
 - Run `docker ps` to verify daemon is accessible
 - Check `server/src/docker/ContainerManager.ts` health check logic
 
 ### WebSocket Connection Failures
+
 - Verify backend is running on correct IPv4 address (127.0.0.1)
 - Check browser console for connection errors
 - Verify no IPv6 usage (::1)
 
 ### Tests Failing
+
 - E2E tests require both servers running
 - Unit tests should not require Docker daemon (use mocks)
 - Check test-specific environment configuration
 
 ### Hot Reload Not Working
+
 - Verify file watcher is initialized (check server logs)
 - Check WebSocket connection is active
 - Verify file changes are within watched directories
@@ -339,26 +373,65 @@ pnpm build:all  # Full production build
 ## Code Quality Standards
 
 ### TypeScript
+
 - Strict mode enabled in all workspaces
 - No `any` types without explicit justification
 - Prefer interfaces over types for object shapes
+- Use TSDoc/JSDoc comments for all public APIs
+- Include `@param`, `@returns`, `@throws`, and `@example` tags
+
+### Naming Conventions
+
+**IMPORTANT**: Follow these naming standards consistently across the codebase:
+
+- **Variables and Functions**: Use camelCase (e.g., `sessionId`, `containerId`, `createSession`)
+- **Constants**: Use UPPER_SNAKE_CASE (e.g., `HEARTBEAT_INTERVAL_MS`, `MAX_RETRIES`)
+- **Types and Interfaces**: Use PascalCase (e.g., `SessionState`, `PortConfig`)
+- **File Names**: Use kebab-case for files (e.g., `session-manager.ts`, `port-config.ts`)
+
+**Consistency Rules**:
+
+- Always use `sessionId` (NOT `session_id`, `sessionID`, or `session-id`)
+- Always use `containerId` (NOT `container_id`, `containerID`)
+- Always use `websocket` or `ws` (NOT mixed `websocket`/`ws` in same context)
+- Use shared constants from `@shared/constants` instead of magic numbers
+
+### Logging Standards
+
+- Use structured logging with Winston (server) or Logger utility (client)
+- Include required fields: `operation`, `sessionId`, `timestamp`
+- Use correlation IDs for request tracing
+- NEVER use `console.log` in production code (use `logger.info()`)
+- Sanitize sensitive data before logging
+- Follow logging standards in `server/src/utils/logger-standards.ts`
 
 ### Error Handling
+
 - Always use try-catch for async operations
-- Log errors with context
+- Log errors with context using structured logger
 - Return meaningful error messages to client
 - Use circuit breaker pattern for Docker operations
+- Use typed errors from `server/src/docker/errors.ts`
 
 ### Security
+
 - Validate all external input
 - Escape all output rendered to HTML
 - Use parameterized queries (future DB integration)
 - Follow principle of least privilege
 - See `SECURITY.md` for detailed guidelines
 
+### Constants and Magic Numbers
+
+- NEVER use magic numbers directly in code
+- Extract all magic numbers to `shared/src/constants.ts`
+- Use descriptive constant names (e.g., `HEARTBEAT_INTERVAL_MS` not `INTERVAL`)
+- Group related constants in objects (e.g., `WEBSOCKET_CONSTANTS`, `CONTAINER_CONSTANTS`)
+
 ## Documentation
 
 ### Key Documentation Files
+
 - `README.md` - Project overview and quick start
 - `ARCHITECTURE.md` - Detailed architecture and design
 - `SECURITY.md` - Security architecture and threat model
@@ -366,6 +439,7 @@ pnpm build:all  # Full production build
 - Phase completion reports - Implementation summaries
 
 ### When to Update Documentation
+
 - New security features → Update `SECURITY.md`
 - Architecture changes → Update `ARCHITECTURE.md`
 - New features → Update `README.md`
