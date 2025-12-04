@@ -1,0 +1,131 @@
+name: Deploy to Mac Studio (with health check)
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  # Configure these per project
+  HEALTH_CHECK_URL: 'http://localhost:3000/api/health'
+  HEALTH_CHECK_TIMEOUT: 30
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get repository name
+        id: repo
+        run: |
+          echo "name=${{ github.event.repository.name }}" >> $GITHUB_OUTPUT
+          echo "Deploying: ${{ github.event.repository.name }}"
+
+      - name: Pull latest code
+        run: |
+          cd /opt/dev/${{ steps.repo.outputs.name }}
+          echo "Current directory: $(pwd)"
+          echo "Git status before pull:"
+          git status --short
+
+          echo "Pulling latest changes..."
+          git fetch origin
+          git reset --hard origin/${{ github.ref_name }}
+
+          echo "Git status after pull:"
+          git log -1 --oneline
+
+      - name: Backup current containers (for rollback)
+        id: backup
+        run: |
+          cd /opt/dev/${{ steps.repo.outputs.name }}
+
+          # Save current image tags for potential rollback
+          docker compose ps --format json | jq -r '.[].Image' > /tmp/pre-deploy-images.txt || true
+
+          echo "Current containers backed up"
+
+      - name: Build and deploy with Docker Compose
+        id: deploy
+        run: |
+          cd /opt/dev/${{ steps.repo.outputs.name }}
+
+          # Check if docker-compose.yml exists
+          if [ ! -f docker-compose.yml ]; then
+            echo "Error: docker-compose.yml not found"
+            exit 1
+          fi
+
+          echo "Building and starting containers..."
+          docker compose build --no-cache
+          docker compose up -d --force-recreate
+
+          echo "Waiting for containers to start..."
+          sleep 15
+
+          echo "Container status:"
+          docker compose ps
+
+      - name: Health check with retry
+        id: healthcheck
+        run: |
+          cd /opt/dev/${{ steps.repo.outputs.name }}
+
+          # Health check with retries
+          MAX_RETRIES=6
+          RETRY_DELAY=5
+          attempt=1
+
+          echo "Starting health check (URL: ${{ env.HEALTH_CHECK_URL }})"
+
+          while [ $attempt -le $MAX_RETRIES ]; do
+            echo "Attempt $attempt/$MAX_RETRIES..."
+
+            if curl -f --max-time 10 "${{ env.HEALTH_CHECK_URL }}" > /dev/null 2>&1; then
+              echo "✓ Health check passed!"
+              exit 0
+            fi
+
+            if [ $attempt -lt $MAX_RETRIES ]; then
+              echo "Health check failed, retrying in ${RETRY_DELAY}s..."
+              sleep $RETRY_DELAY
+            fi
+
+            attempt=$((attempt + 1))
+          done
+
+          echo "✗ Health check failed after $MAX_RETRIES attempts"
+          exit 1
+
+      - name: Rollback on failure
+        if: failure() && steps.deploy.outcome == 'success'
+        run: |
+          cd /opt/dev/${{ steps.repo.outputs.name }}
+
+          echo "=== DEPLOYMENT FAILED - ROLLING BACK ==="
+
+          # Stop failed containers
+          docker compose down
+
+          # Restore previous state
+          echo "Restoring previous containers..."
+          git reset --hard HEAD~1 || true
+          docker compose up -d
+
+          echo "Rollback completed"
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          cd /opt/dev/${{ steps.repo.outputs.name }}
+          echo "=== Deployment Summary ==="
+          echo "Project: ${{ steps.repo.outputs.name }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Commit: $(git log -1 --oneline)"
+          echo "Status: ${{ job.status }}"
+          echo ""
+          echo "Running containers:"
+          docker compose ps
+          echo ""
+          echo "Recent logs:"
+          docker compose logs --tail=30
